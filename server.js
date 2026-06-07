@@ -6,12 +6,107 @@ import { fileURLToPath } from 'url'
 import multer from 'multer'
 import net from 'net'
 import { PDFParse } from 'pdf-parse'
+import { loadServerEnv } from './server/config/env.js'
+import { createLeadWorkspaceRepository } from './server/modules/leads/repositories/lead-workspace-repository.js'
+import { createTavilyAdapter } from './server/modules/leads/providers/tavily-adapter.js'
+import { createBraveAdapter } from './server/modules/leads/providers/brave-adapter.js'
+import { createGoogleMapsAdapter } from './server/modules/leads/providers/google-maps-adapter.js'
+import {
+  blockedResearchDomains,
+  buildIndustryCandidates,
+  buildSearchStrategy
+} from './server/modules/leads/config/search-strategy.js'
+import {
+  cleanDomain,
+  dedupeStrings,
+  normalizeKey,
+  stripTrackingParams,
+  titleCase,
+  toRootCompanyUrl,
+  truncateText
+} from './server/modules/leads/shared/text-utils.js'
+import {
+  isLikelyCompanyCandidate,
+  looksBlockedResearchDomain,
+  titleLooksGeneric
+} from './server/modules/leads/domain/entity-resolution/company-candidate-filter.js'
+import { mergeProviderCandidates } from './server/modules/leads/domain/entity-resolution/provider-candidate-merger.js'
+import { analyzeCompanyWebsite } from './server/modules/leads/application/analyzers/company-website-analyzer.js'
+import { buildWorkspaceFromCompanies as buildWorkspaceFromCompaniesModule } from './server/modules/leads/application/workspace/build-workspace-from-companies.js'
+import { buildSeededWorkspace } from './server/modules/leads/application/workspace/build-seeded-workspace.js'
+import { createWorkspaceSummary as createWorkspaceSummaryModule } from './server/modules/leads/application/workspace/workspace-summary.js'
+import { createAddressVerificationService } from './server/modules/leads/application/services/address-verification-service.js'
+import { createGoogleMapsSearchService } from './server/modules/leads/application/services/google-maps-search-service.js'
+import { createBatchAddressVerificationService } from './server/modules/leads/application/services/batch-address-verification-service.js'
+import { createAddressClassificationService } from './server/modules/leads/application/services/address-classification-service.js'
+import { createCompanySimilarityService } from './server/modules/leads/application/services/company-similarity-service.js'
+import { createLeadDiscoveryService } from './server/modules/leads/application/services/lead-discovery-service.js'
+import { createGistCustomerDataService } from './server/modules/leads/application/services/gist-customer-data-service.js'
+import { createOsintParserFacade } from './server/modules/leads/application/osint/osint-parser-facade.js'
+import { createOsintResearchService } from './server/modules/leads/application/services/osint-research-service.js'
+import { createLeadOsintRouter } from './server/modules/leads/routes/osint-routes.js'
+import { createLeadSupportRouter } from './server/modules/leads/routes/lead-support-routes.js'
+import { createLeadExportRouter } from './server/modules/leads/routes/lead-export-routes.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
+const { TAVILY_API_KEY, BRAVE_API_KEY, GOOGLE_MAPS_API_KEY, GIST_ID, GITHUB_GIST_TOKEN, GIST_CUSTOMER_DATA_FILENAME } = loadServerEnv(__dirname)
+const gistCustomerDataService = createGistCustomerDataService({
+  gistId: GIST_ID,
+  githubToken: GITHUB_GIST_TOKEN,
+  fileName: GIST_CUSTOMER_DATA_FILENAME
+})
+const leadWorkspaceRepository = createLeadWorkspaceRepository(__dirname, { gistCustomerDataService })
+const tavilyAdapter = createTavilyAdapter({ apiKey: TAVILY_API_KEY })
+const braveAdapter = createBraveAdapter({ apiKey: BRAVE_API_KEY })
+const googleMapsAdapter = createGoogleMapsAdapter({ apiKey: GOOGLE_MAPS_API_KEY })
+const addressVerificationService = createAddressVerificationService({ googleMapsAdapter })
+const googleMapsSearchService = createGoogleMapsSearchService({ googleMapsAdapter })
+const batchAddressVerificationService = createBatchAddressVerificationService({ googleMapsAdapter })
+const addressClassificationService = createAddressClassificationService({ googleMapsAdapter })
+const companySimilarityService = createCompanySimilarityService({ tavilyAdapter })
+const leadDiscoveryService = createLeadDiscoveryService({
+  tavilySearch: (...args) => tavilyAdapter.search(...args),
+  braveSearch: (...args) => braveAdapter.search(...args),
+  googleMapsSearch: (...args) => googleMapsAdapter.searchLeadDiscovery(...args)
+})
+const osintParserFacade = createOsintParserFacade()
+const osintResearchService = createOsintResearchService({
+  tavilySearch: (...args) => tavilyAdapter.search(...args),
+  braveSearch: (...args) => braveAdapter.search(...args),
+  googleMapsSearch: (...args) => googleMapsAdapter.searchText(...args),
+  parserFacade: osintParserFacade,
+  providerAvailability: {
+    tavily: Boolean(TAVILY_API_KEY),
+    brave: Boolean(BRAVE_API_KEY),
+    googleMaps: Boolean(GOOGLE_MAPS_API_KEY)
+  }
+})
+const providerAvailability = {
+  tavily: {
+    available: Boolean(TAVILY_API_KEY),
+    missingEnvVars: TAVILY_API_KEY ? [] : ['TAVILY_API_KEY']
+  },
+  brave: {
+    available: Boolean(BRAVE_API_KEY),
+    missingEnvVars: BRAVE_API_KEY ? [] : ['BRAVE_API_KEY']
+  },
+  googleMaps: {
+    available: Boolean(GOOGLE_MAPS_API_KEY),
+    missingEnvVars: GOOGLE_MAPS_API_KEY ? [] : ['GOOGLE_MAPS_API_KEY']
+  }
+}
 
 const app = express()
 const DEFAULT_PORT = 3010
+
+function isDirectExecution() {
+  if (!process.argv[1]) {
+    return false
+  }
+
+  return path.resolve(process.argv[1]) === __filename
+}
 
 // Check if a port is available
 function isPortAvailable(port) {
@@ -49,10 +144,24 @@ const resumeTxtPath = path.join(__dirname, 'data', 'resume.txt')
 const resumeMetaPath = path.join(__dirname, 'data', 'resume-meta.json')
 const dataDir = path.join(__dirname, 'data')
 
+
+function createWorkspaceSummary(companies, contacts, drafts) {
+  return {
+    companyCount: companies.length,
+    contactCount: contacts.length,
+    draftCount: drafts.length,
+    topProfiles: dedupeStrings(companies.map((company) => company.profile)).slice(0, 4)
+  }
+}
+
+const searchWithGoogleMapsNew = (...args) => googleMapsAdapter.searchText(...args)
+
 // Ensure data directory exists
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true })
 }
+
+leadWorkspaceRepository.init()
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -700,16 +809,157 @@ app.post('/api/monitored-companies', (req, res) => {
   }
 })
 
-// Start server with automatic port selection
-;(async () => {
+app.get('/api/lead-workspaces', async (req, res) => {
+  try {
+    const workspaces = await leadWorkspaceRepository.list()
+    res.json({ workspaces })
+  } catch (error) {
+    console.error('Error reading lead workspaces:', error)
+    res.status(500).json({ error: 'Failed to read lead workspaces' })
+  }
+})
+
+app.post('/api/lead-workspaces/discover', async (req, res) => {
+  try {
+    const { industry, keywords = [], country = '', targetTypes = [], excludeTypes = [] } = req.body
+
+    if (!industry || typeof industry !== 'string') {
+      return res.status(400).json({ error: 'Industry is required' })
+    }
+
+    const workspace = await leadDiscoveryService.discoverWorkspace({ industry, keywords, country, targetTypes, excludeTypes })
+    await leadWorkspaceRepository.prependAndTrim(workspace, 25)
+
+    res.json({ workspace })
+  } catch (error) {
+    console.error('Error creating lead workspace:', error)
+    res.status(500).json({ error: 'Failed to create lead workspace' })
+  }
+})
+
+app.use('/api/lead-workspaces', createLeadOsintRouter({ osintResearchService }))
+app.use('/api', createLeadSupportRouter({
+  addressClassificationService,
+  companySimilarityService,
+  gistCustomerDataService,
+  providerAvailability
+}))
+app.use('/api', createLeadExportRouter({
+  leadWorkspaceRepository,
+  gistCustomerDataService
+}))
+
+app.put('/api/lead-workspaces/:id/company/:companyId', async (req, res) => {
+  try {
+    const updateResult = await leadWorkspaceRepository.updateCompany(req.params.id, req.params.companyId, (company, workspace) => {
+      const nextCompany = {
+        ...company,
+        ...req.body
+      }
+
+      const nextCompanies = workspace.companies.map((item) => item.id === company.id ? nextCompany : item)
+      workspace.summary = createWorkspaceSummaryModule(nextCompanies, workspace.contacts || [], workspace.drafts || [])
+
+      return nextCompany
+    })
+
+    if (!updateResult) {
+      return res.status(404).json({ error: 'Workspace not found' })
+    }
+
+    if (!updateResult.company) {
+      return res.status(404).json({ error: 'Company not found' })
+    }
+
+    res.json({ company: updateResult.company })
+  } catch (error) {
+    console.error('Error updating company:', error)
+    res.status(500).json({ error: 'Failed to update company' })
+  }
+})
+
+
+app.get('/api/lead-workspaces/:id', async (req, res) => {
+  try {
+    const workspace = await leadWorkspaceRepository.getById(req.params.id)
+
+    if (!workspace) {
+      return res.status(404).json({ error: 'Workspace not found' })
+    }
+
+    res.json({ workspace })
+  } catch (error) {
+    console.error('Error reading lead workspace:', error)
+    res.status(500).json({ error: 'Failed to read lead workspace' })
+  }
+})
+
+// Google Maps verification endpoint
+app.post('/api/lead-workspaces/verify-google-maps', async (req, res) => {
+  try {
+    const { companyName, address } = req.body
+
+    if (!companyName || !address) {
+      return res.status(400).json({ error: 'companyName and address are required' })
+    }
+
+    const result = await addressVerificationService.verifyCompanyAddress({ companyName, address })
+    res.json(result)
+  } catch (error) {
+    console.error('Error verifying with Google Maps:', error)
+    res.status(500).json({ error: 'Failed to verify with Google Maps' })
+  }
+})
+
+// Google Maps Search endpoint (active lead generation)
+app.post('/api/google-maps/search', async (req, res) => {
+  try {
+    const { query, location, filters = {} } = req.body
+
+    if (!query) {
+      return res.status(400).json({ error: 'query is required' })
+    }
+
+    const result = await googleMapsSearchService.search({ query, location, filters })
+    res.json(result)
+  } catch (error) {
+    console.error('Error searching Google Maps:', error)
+    res.status(500).json({ error: 'Failed to search Google Maps' })
+  }
+})
+
+// Batch CSV/Excel verification endpoint
+app.post('/api/lead-workspaces/batch-verify-csv', async (req, res) => {
+  try {
+    const { companies } = req.body
+
+    if (!Array.isArray(companies) || companies.length === 0) {
+      return res.status(400).json({ error: 'companies array is required and must not be empty' })
+    }
+
+    const result = await batchAddressVerificationService.verifyCompanies(companies)
+    res.json(result)
+  } catch (error) {
+    console.error('Error batch verifying with Google Maps:', error)
+    res.status(500).json({ error: 'Failed to batch verify with Google Maps' })
+  }
+})
+export async function startServer() {
   try {
     const port = await findAvailablePort(DEFAULT_PORT)
-    app.listen(port, () => {
+    return app.listen(port, () => {
       console.log(`Server running on http://localhost:${port}`)
     })
   } catch (error) {
     console.error('Failed to start server:', error.message)
     process.exit(1)
   }
-})()
+}
+
+export { app }
+export default app
+
+if (isDirectExecution()) {
+  startServer()
+}
 
