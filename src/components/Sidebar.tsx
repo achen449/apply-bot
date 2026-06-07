@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Settings, Calendar, Monitor, Sun, Moon, FileText, BookOpen, Settings2, FileCode, ScrollText, Eye } from 'lucide-react'
+import { LayoutDashboard, Monitor, Sun, Moon, FileText, BookOpen, Settings2, FileCode, ScrollText, Eye, Radar, MapPin, Search, ShieldQuestion, Sparkles } from 'lucide-react'
 import { useThemeStore } from '@/store/themeStore'
 import { useSidebarStore } from '@/store/sidebarStore'
 
@@ -10,6 +10,11 @@ export default function Sidebar() {
 
   const links = [
     { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
+    { to: '/lead-finder', icon: Radar, label: 'Lead Finder', badge: 'NEW' },
+    { to: '/google-maps-search', icon: Search, label: 'Maps Search', badge: 'NEW' },
+    { to: '/google-maps-verify', icon: MapPin, label: 'Maps Verify', badge: 'NEW' },
+    { to: '/address-classifier', icon: ShieldQuestion, label: 'Address Class', badge: 'NEW' },
+    { to: '/similar-companies', icon: Sparkles, label: 'Similar AI', badge: 'NEW' },
     { to: '/applications', icon: FileText, label: 'Applications' },
     { to: '/monitor', icon: Eye, label: 'Monitor', badge: 'BETA' },
     { to: '/config', icon: Settings2, label: 'Config' },

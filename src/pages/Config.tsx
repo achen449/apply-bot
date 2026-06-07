@@ -176,7 +176,7 @@ export default function Config() {
       })
 
       if (response.ok) {
-        const data = await response.json()
+        await response.json()
         setParsingStatus(prev => ({ ...prev, [fileName]: 'success' }))
         setParsingMessage(prev => ({
           ...prev,

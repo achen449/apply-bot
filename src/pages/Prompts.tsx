@@ -410,9 +410,9 @@ export default function Prompts() {
                           prose-h1:text-2xl prose-h2:text-xl prose-h3:text-lg`}>
                           <ReactMarkdown
                             components={{
-                              code: ({ node, inline, className, children, ...props }) => {
+                              code: ({ className, children, ...props }) => {
                                 const match = /language-(\w+)/.exec(className || '')
-                                return !inline && match ? (
+                                return match ? (
                                   <code className={className} {...props}>
                                     {children}
                                   </code>

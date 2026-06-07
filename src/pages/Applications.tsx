@@ -25,7 +25,7 @@ export default function Applications() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [companyFilter, setCompanyFilter] = useState<string>('')
   const [positionFilter, setPositionFilter] = useState<string>('')
-  const [sortOrder, setSortOrder] = useState<SortOrder>('newest-first')
+  const [sortOrder] = useState<SortOrder>('newest-first')
   const [postedSort, setPostedSort] = useState<'asc' | 'desc' | null>(null) // null = not active, asc = oldest first, desc = newest first
   const [appliedSort, setAppliedSort] = useState<'asc' | 'desc' | null>(null) // null = not active, asc = oldest first, desc = newest first
   const [currentPage, setCurrentPage] = useState(1)

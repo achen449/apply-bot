@@ -1,5 +1,4 @@
 import { create } from 'zustand'
-import { storage } from '@/utils/storage'
 
 interface SidebarState {
   collapsed: boolean

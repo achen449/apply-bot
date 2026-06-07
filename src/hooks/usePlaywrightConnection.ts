@@ -28,7 +28,7 @@ export function usePlaywrightConnection() {
   const pendingRequests = useRef<Map<string, {
     resolve: (value: any) => void
     reject: (error: any) => void
-    timeout: NodeJS.Timeout
+    timeout: ReturnType<typeof setTimeout>
   }>>(new Map())
 
   // Send a message to the extension via content script
