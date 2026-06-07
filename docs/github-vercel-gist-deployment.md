@@ -123,10 +123,10 @@ Do not put provider or Gist secrets in any browser-visible variable.
 
 That means:
 
-- do not create `VITE_TAVILY_API_KEY`
-- do not create `VITE_BRAVE_API_KEY`
-- do not create `VITE_GOOGLE_MAPS_API_KEY`
-- do not create `VITE_GITHUB_GIST_TOKEN`
+Use plain frontend naming guidance instead:
+
+- do not create browser-exposed provider key variables
+- do not create browser-exposed Gist token variables
 - do not create any other `VITE_*` variable containing private credentials
 
 `VITE_*` variables are bundled into the frontend and are not appropriate for private provider keys or tokens.

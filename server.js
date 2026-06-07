@@ -105,6 +105,34 @@ function sendMissingEnvResponse(res, message, missingEnvVars) {
     missingEnvVars
   })
 }
+function sendLeadServiceError(res, error, fallbackMessage) {
+  if (error?.code === 'missing_env') {
+    return sendMissingEnvResponse(res, error.message, error.missingEnvVars || [])
+  }
+
+  if (error?.code === 'invalid_payload') {
+    return res.status(400).json({
+      success: false,
+      code: 'invalid_payload',
+      error: error.message || fallbackMessage
+    })
+  }
+
+  if (error?.code === 'invalid_gist_json' || error?.code === 'gist_request_failed' || error?.code === 'gist_update_failed') {
+    return res.status(error.status || 502).json({
+      success: false,
+      code: error.code,
+      error: fallbackMessage
+    })
+  }
+
+  return res.status(error?.status || 500).json({
+    success: false,
+    code: error?.code || 'request_failed',
+    error: fallbackMessage
+  })
+}
+
 
 
 const app = express()
@@ -843,7 +871,7 @@ app.post('/api/lead-workspaces/discover', async (req, res) => {
     res.json({ workspace })
   } catch (error) {
     console.error('Error creating lead workspace:', error)
-    res.status(500).json({ error: 'Failed to create lead workspace' })
+    return sendLeadServiceError(res, error, 'Failed to create lead workspace')
   }
 })
 
