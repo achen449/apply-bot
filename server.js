@@ -97,6 +97,16 @@ const providerAvailability = {
   }
 }
 
+function sendMissingEnvResponse(res, message, missingEnvVars) {
+  return res.status(503).json({
+    success: false,
+    code: 'missing_env',
+    error: message,
+    missingEnvVars
+  })
+}
+
+
 const app = express()
 const DEFAULT_PORT = 3010
 
@@ -899,6 +909,14 @@ app.post('/api/lead-workspaces/verify-google-maps', async (req, res) => {
   try {
     const { companyName, address } = req.body
 
+    if (!providerAvailability.googleMaps.available) {
+      return sendMissingEnvResponse(
+        res,
+        'GOOGLE_MAPS_API_KEY is required for Google Maps verification.',
+        providerAvailability.googleMaps.missingEnvVars
+      )
+    }
+
     if (!companyName || !address) {
       return res.status(400).json({ error: 'companyName and address are required' })
     }
@@ -915,6 +933,14 @@ app.post('/api/lead-workspaces/verify-google-maps', async (req, res) => {
 app.post('/api/google-maps/search', async (req, res) => {
   try {
     const { query, location, filters = {} } = req.body
+
+    if (!providerAvailability.googleMaps.available) {
+      return sendMissingEnvResponse(
+        res,
+        'GOOGLE_MAPS_API_KEY is required for Google Maps search.',
+        providerAvailability.googleMaps.missingEnvVars
+      )
+    }
 
     if (!query) {
       return res.status(400).json({ error: 'query is required' })
@@ -933,6 +959,14 @@ app.post('/api/lead-workspaces/batch-verify-csv', async (req, res) => {
   try {
     const { companies } = req.body
 
+    if (!providerAvailability.googleMaps.available) {
+      return sendMissingEnvResponse(
+        res,
+        'GOOGLE_MAPS_API_KEY is required for batch Google Maps verification.',
+        providerAvailability.googleMaps.missingEnvVars
+      )
+    }
+
     if (!Array.isArray(companies) || companies.length === 0) {
       return res.status(400).json({ error: 'companies array is required and must not be empty' })
     }
@@ -944,6 +978,7 @@ app.post('/api/lead-workspaces/batch-verify-csv', async (req, res) => {
     res.status(500).json({ error: 'Failed to batch verify with Google Maps' })
   }
 })
+
 export async function startServer() {
   try {
     const port = await findAvailablePort(DEFAULT_PORT)
