@@ -10,7 +10,26 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+.env
+.env.*
+!.env.example
 *.local
+.vercel
+.sisyphus/
+*.bak
+test-google-maps*.js
+
+# Local lead and customer data
+data/*.csv
+data/*.tsv
+data/*.xlsx
+data/*.xls
+data/*.pdf
+data/*.txt
+data/*.json
+data/prompts/
+!data/SampleResume.pdf
+!data/SampleResume.tex
 
 # Editor directories and files
 .vscode/*
