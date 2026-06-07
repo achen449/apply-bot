@@ -321,22 +321,26 @@ export default function LeadFinder() {
                 通过 `GET /api/customer-data` 和 `PUT /api/customer-data` 把 Lead Finder 工作区读写到 Gist。保存时会保留远程 JSON 里的其它字段，只更新 `leadWorkspaces`。
               </CardDescription>
             </div>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <a href={getCustomerDataExportUrl()}>
-                <Button type="button" variant="outline">
-                  <Download className="mr-2 h-4 w-4" />
-                  导出完整 Excel
-                </Button>
-              </a>
-              <Button type="button" variant="outline" onClick={handleLoadCustomerData} disabled={isLoadingCustomerData}>
-                {isLoadingCustomerData ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
-                载入远程客户数据
-              </Button>
-              <Button type="button" onClick={handleSaveCustomerData} disabled={isSavingCustomerData || workspaces.length === 0}>
-                {isSavingCustomerData ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-                保存当前工作区
-              </Button>
-            </div>
+             <div className="flex flex-col gap-2 sm:flex-row">
+               <a href={getCustomerDataExportUrl()}>
+                 <Button type="button" variant="outline">
+                   <Download className="mr-2 h-4 w-4" />
+-                  导出完整 Excel
++                  下载客户数据 Excel
+                 </Button>
+               </a>
+               <Button type="button" variant="outline" onClick={handleLoadCustomerData} disabled={isLoadingCustomerData}>
+                 {isLoadingCustomerData ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
+-                载入远程客户数据
++                从 Gist 载入远程客户数据
+               </Button>
+               <Button type="button" onClick={handleSaveCustomerData} disabled={isSavingCustomerData || workspaces.length === 0}>
+                 {isSavingCustomerData ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+-                保存当前工作区
++                同步当前工作区到 Gist
+               </Button>
+             </div>
+
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -356,9 +360,12 @@ export default function LeadFinder() {
             <InfoBlock title="操作说明" lines={[
               'Load: pull remote JSON from Gist into this UI.',
               'Save: merge current lead workspaces back into the same JSON document.',
+              'Excel: download the current customer-data workbook from /api/customer-data/export.xlsx.',
               'Missing env: set GIST_ID and GITHUB_GIST_TOKEN in Vercel/local env.',
               'Secrets never appear in this page.'
             ]} />
+
+
           </div>
 
           {customerDataMessage ? (
@@ -491,7 +498,44 @@ export default function LeadFinder() {
                           <InfoBlock title="来源" lines={[`Provider: ${(draftCompany.matchedProviders || [draftCompany.source || 'seeded-profile']).join(', ')}`, `Profile: ${draftCompany.profile}`, `Segment: ${draftCompany.segment}`, `Market Role: ${draftCompany.marketRole || 'unclear'}`, `Query Hits: ${draftCompany.matchedQueryCount || 1}`, `Query Labels: ${(draftCompany.matchedQueryLabels || []).join(', ') || 'company'}`, `Official Website Likely: ${draftCompany.officialWebsiteLikely ? 'Yes' : 'No'}`, `Source URL: ${draftCompany.sourceUrl || draftCompany.website}`]} />
                         </div>
 
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <InfoBlock title="公开公司信息" lines={[
+                            `Website: ${draftCompany.website || 'N/A'}`,
+                            `Country / Location: ${draftCompany.country || draftCompany.headquarters || 'N/A'}`,
+                            `Address: ${draftCompany.address || 'N/A'}`,
+                            `Phone: ${draftCompany.phone || 'N/A'}`
+                          ]} />
+                          <InfoBlock title="Workflow Origin" lines={[
+                            `Lead Workspace Providers: ${(selectedWorkspace.providersUsed || ['seeded-profile']).join(', ')}`,
+                            `Company Source: ${draftCompany.source || 'seeded-profile'}`,
+                            `Evidence URL: ${draftCompany.sourceUrl || draftCompany.website || 'N/A'}`,
+                            `Public Emails Observed: ${draftCompany.contactEmails?.length || 0}`
+                          ]} />
+                        </div>
+
+                        {draftCompany.sourceUrl ? (
+                          <a href={draftCompany.sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm font-medium text-primary-600 hover:text-primary-700">
+                            查看来源证据 <ExternalLink className="h-3 w-3" />
+                          </a>
+                        ) : null}
+
+                        {draftCompany.contactPages && draftCompany.contactPages.length > 0 ? (
+                          <div className="rounded-2xl border border-stone-200 bg-stone-50 p-4 text-sm text-stone-700 dark:border-stone-700 dark:bg-stone-900/60 dark:text-stone-300">
+                            <div className="font-semibold text-gray-900 dark:text-white">Observed Public Contact Pages</div>
+                            <div className="mt-3 flex flex-wrap gap-3">
+                              {draftCompany.contactPages.map((page) => (
+                                <a key={page} href={page} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-primary-600 hover:text-primary-700">
+                                  {page}
+                                  <ExternalLink className="h-3 w-3" />
+                                </a>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+
                         <EditableTextarea label="官网业务摘要" value={draftCompany.businessSummary || ''} onChange={(value) => updateDraftCompany({ businessSummary: value })} />
+
+
                         <EditableTextarea label="采购相关性 / 开发切入点" value={draftCompany.buyingRelevance || ''} onChange={(value) => updateDraftCompany({ buyingRelevance: value })} rows={4} />
 
                         <div className="grid gap-4 md:grid-cols-2">
@@ -651,7 +695,21 @@ export default function LeadFinder() {
                                     ))}
                                   </div>
                                 </section>
+
+                                <section className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
+                                  <div className="text-sm font-semibold text-gray-900 dark:text-white">Observed Public Emails</div>
+                                  <div className="mt-3 space-y-2">
+                                    {(draftCompany.contactEmails || []).length === 0 ? <div className="text-sm text-gray-500 dark:text-gray-400">当前公司卡片还没有保存公开邮箱。你可以保留研究返回的 publicContacts 或手动同步到公司字段。</div> : null}
+                                    {(draftCompany.contactEmails || []).map((email) => (
+                                      <a key={email} href={`mailto:${email}`} className="inline-flex items-center gap-1 text-sm text-primary-600 hover:text-primary-700">
+                                        {email}
+                                      </a>
+                                    ))}
+                                  </div>
+                                </section>
                               </div>
+
+
 
                               <div className="space-y-4">
                                 <section className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">

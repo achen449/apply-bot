@@ -1,5 +1,5 @@
 import { FormEvent, useMemo, useState } from 'react'
-import { AlertTriangle, Building2, Download, ExternalLink, Globe2, Loader2, Mail, MapPin, Phone, Search, Star } from 'lucide-react'
+import { Building2, Download, ExternalLink, Globe2, Loader2, Mail, MapPin, Phone, Search, Star } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { searchGoogleMaps, type GoogleMapsPlace, type GoogleMapsSearchResult } from '@/lib/leadApi'

@@ -1,8 +1,110 @@
 import { FormEvent, useState } from 'react'
+import { CheckCircle2, ExternalLink, Loader2, MapPin, ShieldCheck, XCircle } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { CheckCircle2, Loader2, MapPin, XCircle } from 'lucide-react'
-import { verifyCompanyWithGoogleMaps, batchVerifyCompaniesWithGoogleMaps, type BatchVerificationResult, type GoogleMapsVerificationResult } from '@/lib/leadApi'
+import {
+  verifyCompanyWithGoogleMaps,
+  batchVerifyCompaniesWithGoogleMaps,
+  type BatchVerificationResult,
+  type GoogleMapsMatch,
+  type GoogleMapsVerificationResult
+} from '@/lib/leadApi'
+
+function buildWorkflowHint(message: string) {
+  if (message.includes('GOOGLE_MAPS_API_KEY')) {
+    return `${message} Google Maps verification uses the server route only, so configure GOOGLE_MAPS_API_KEY in Vercel or the local Node service before retrying.`
+  }
+
+  return message
+}
+
+function formatStatus(status: string) {
+  if (status === 'OPERATIONAL') return '营业中'
+  if (status === 'CLOSED_TEMPORARILY') return '暂停营业'
+  if (status === 'CLOSED_PERMANENTLY') return '永久关闭'
+  return status || '状态未知'
+}
+
+function formatTypeLabel(value: string) {
+  return value.replace(/_/g, ' ')
+}
+
+function buildSourceUrl(match: GoogleMapsMatch | null) {
+  if (!match) {
+    return ''
+  }
+
+  return match.sourceUrl || match.website || (match.placeId ? `https://www.google.com/maps/place/?q=place_id:${match.placeId}` : '')
+}
+
+function MatchInfo({ match }: { match: GoogleMapsMatch }) {
+  const sourceUrl = buildSourceUrl(match)
+
+  return (
+    <div className="space-y-4 text-sm text-emerald-700 dark:text-emerald-300">
+      <div className="grid gap-4 md:grid-cols-2">
+        <InfoBlock
+          title="Verified Company"
+          lines={[
+            `Name: ${match.name || 'N/A'}`,
+            `Address: ${match.address || 'N/A'}`,
+            `Phone: ${match.phone || 'N/A'}`,
+            `Website: ${match.website || 'N/A'}`
+          ]}
+        />
+        <InfoBlock
+          title="Provider Metadata"
+          lines={[
+            `Provider: ${match.provider || 'google-maps'}`,
+            `Workflow Origin: google-maps-verify`,
+            `Query Label: ${match.queryLabel || 'company'}`,
+            `Query: ${match.query || 'N/A'}`
+          ]}
+        />
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <InfoBlock
+          title="Match Quality"
+          lines={[
+            `Rating: ${match.rating || 'N/A'}`,
+            `Review Count: ${match.reviewCount || 0}`,
+            `Business Status: ${formatStatus(match.businessStatus)}`,
+            `Primary Type: ${match.primaryType ? formatTypeLabel(match.primaryType) : 'N/A'}`
+          ]}
+        />
+        <InfoBlock
+          title="Evidence"
+          lines={[
+            `Source URL: ${sourceUrl || 'N/A'}`,
+            `Place ID: ${match.placeId || 'N/A'}`,
+            `Coordinates: ${match.location ? `${match.location.lat}, ${match.location.lng}` : 'N/A'}`,
+            `Types: ${(match.types || []).map(formatTypeLabel).join(', ') || 'N/A'}`
+          ]}
+        />
+      </div>
+
+      {sourceUrl ? (
+        <a href={sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-medium text-primary-600 hover:text-primary-700">
+          打开证据来源 <ExternalLink className="h-3 w-3" />
+        </a>
+      ) : null}
+    </div>
+  )
+}
+
+function InfoBlock({ title, lines }: { title: string; lines: string[] }) {
+  return (
+    <div className="rounded-2xl bg-white/60 p-4 text-sm text-stone-700 dark:bg-stone-900/40 dark:text-stone-200">
+      <div className="font-semibold text-gray-900 dark:text-white">{title}</div>
+      <div className="mt-2 space-y-1">
+        {lines.map((line) => (
+          <div key={line}>{line}</div>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 export default function GoogleMapsVerify() {
   const [companyName, setCompanyName] = useState('')
@@ -27,7 +129,8 @@ export default function GoogleMapsVerify() {
       setVerificationResult(result)
     } catch (verifyError) {
       console.error(verifyError)
-      setError(verifyError instanceof Error ? verifyError.message : 'Verification failed')
+      const message = verifyError instanceof Error ? verifyError.message : 'Verification failed'
+      setError(buildWorkflowHint(message))
     } finally {
       setIsVerifying(false)
     }
@@ -41,16 +144,18 @@ export default function GoogleMapsVerify() {
 
     try {
       const lines = batchInput.trim().split('\n').filter(Boolean)
-      const companies = lines.map((line) => {
-        const parts = line.split(',').map((part) => part.trim())
-        return {
-          name: parts[0] || '',
-          address: parts[1] || ''
-        }
-      }).filter((company) => company.name && company.address)
+      const companies = lines
+        .map((line) => {
+          const parts = line.split(',').map((part) => part.trim())
+          return {
+            name: parts[0] || '',
+            address: parts.slice(1).join(', ')
+          }
+        })
+        .filter((company) => company.name && company.address)
 
       if (companies.length === 0) {
-        setBatchError('No valid companies found. Use format: Company Name, Address (one per line)')
+        setBatchError('No valid companies found. Use format: Company Name, Address (one per line).')
         return
       }
 
@@ -58,7 +163,8 @@ export default function GoogleMapsVerify() {
       setBatchResults(results)
     } catch (verifyError) {
       console.error(verifyError)
-      setBatchError(verifyError instanceof Error ? verifyError.message : 'Batch verification failed')
+      const message = verifyError instanceof Error ? verifyError.message : 'Batch verification failed'
+      setBatchError(buildWorkflowHint(message))
     } finally {
       setIsBatchVerifying(false)
     }
@@ -69,40 +175,44 @@ export default function GoogleMapsVerify() {
       <div>
         <h2 className="text-3xl font-bold text-gray-900 dark:text-white">Google Maps Verification</h2>
         <p className="mt-2 max-w-4xl text-sm text-gray-600 dark:text-gray-400">
-          Verify company information using Google Maps. Single verification for quick checks, or batch CSV paste for multiple companies.
+          使用 `/api/lead-workspaces/verify-google-maps` 和 `/api/lead-workspaces/batch-verify-csv` 校验公司名称与地址。返回结果会展示官网、电话、Google Maps 来源元数据和证据链接。
         </p>
       </div>
 
+      <div className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm text-stone-700 dark:border-stone-700 dark:bg-stone-900/60 dark:text-stone-300">
+        依赖服务端 `GOOGLE_MAPS_API_KEY`。如果出现缺少环境变量提示，请只在 Vercel 或本地 Node 服务端配置，不要把密钥放进浏览器代码。
+      </div>
+
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card className="border-gray-200 dark:border-stone-700 shadow-sm">
+        <Card className="border-gray-200 shadow-sm dark:border-stone-700">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-xl">
               <MapPin className="h-5 w-5 text-primary-600" />
               Single Verification
             </CardTitle>
             <CardDescription>
-              Verify one company at a time. Google Maps will return phone, website, rating, and business status.
+              Verify one company at a time. The response should include address, phone, website, status, provider/source URL, and workflow origin.
             </CardDescription>
           </CardHeader>
           <CardContent>
             <form className="space-y-4" onSubmit={handleSingleVerify}>
               <label className="flex flex-col gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
                 Company Name
-                <input 
-                  value={companyName} 
-                  onChange={(event) => setCompanyName(event.target.value)} 
-                  className="rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-primary-400 focus:ring-2 focus:ring-primary-100 dark:border-stone-700 dark:bg-stone-900 dark:text-white" 
-                  placeholder="e.g., Siemens Energy" 
+                <input
+                  value={companyName}
+                  onChange={(event) => setCompanyName(event.target.value)}
+                  className="rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-primary-400 focus:ring-2 focus:ring-primary-100 dark:border-stone-700 dark:bg-stone-900 dark:text-white"
+                  placeholder="e.g., Siemens Energy"
                   required
                 />
               </label>
               <label className="flex flex-col gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
                 Address
-                <input 
-                  value={address} 
-                  onChange={(event) => setAddress(event.target.value)} 
-                  className="rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-primary-400 focus:ring-2 focus:ring-primary-100 dark:border-stone-700 dark:bg-stone-900 dark:text-white" 
-                  placeholder="e.g., Berlin, Germany" 
+                <input
+                  value={address}
+                  onChange={(event) => setAddress(event.target.value)}
+                  className="rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-primary-400 focus:ring-2 focus:ring-primary-100 dark:border-stone-700 dark:bg-stone-900 dark:text-white"
+                  placeholder="e.g., Berlin, Germany"
                   required
                 />
               </label>
@@ -115,20 +225,14 @@ export default function GoogleMapsVerify() {
 
             {verificationResult ? (
               <div className="mt-6 space-y-3">
-                {verificationResult.verified ? (
+                {verificationResult.verified && verificationResult.match ? (
                   <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-900/30 dark:bg-emerald-900/10">
                     <div className="flex items-center gap-2 text-sm font-semibold text-emerald-800 dark:text-emerald-200">
-                      <CheckCircle2 className="h-4 w-4" />
+                      <ShieldCheck className="h-4 w-4" />
                       Verified on Google Maps
                     </div>
-                    <div className="mt-3 space-y-2 text-sm text-emerald-700 dark:text-emerald-300">
-                      <div><strong>Name:</strong> {verificationResult.match?.name}</div>
-                      <div><strong>Address:</strong> {verificationResult.match?.address}</div>
-                      <div><strong>Phone:</strong> {verificationResult.match?.phone || 'N/A'}</div>
-                      <div><strong>Website:</strong> {verificationResult.match?.website ? <a href={verificationResult.match.website} target="_blank" rel="noreferrer" className="underline">{verificationResult.match.website}</a> : 'N/A'}</div>
-                      <div><strong>Rating:</strong> {verificationResult.match?.rating || 'N/A'}</div>
-                      <div><strong>Status:</strong> {verificationResult.match?.businessStatus}</div>
-                      <div><strong>Types:</strong> {(verificationResult.match?.types || []).join(', ')}</div>
+                    <div className="mt-3">
+                      <MatchInfo match={verificationResult.match} />
                     </div>
                   </div>
                 ) : (
@@ -147,25 +251,25 @@ export default function GoogleMapsVerify() {
           </CardContent>
         </Card>
 
-        <Card className="border-gray-200 dark:border-stone-700 shadow-sm">
+        <Card className="border-gray-200 shadow-sm dark:border-stone-700">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-xl">
               <MapPin className="h-5 w-5 text-primary-600" />
               Batch CSV Verification
             </CardTitle>
             <CardDescription>
-              Paste CSV data or Excel-exported text. Format: Company Name, Address (one per line)
+              Paste CSV data or Excel-exported text. Format: Company Name, Address (one per line). Results should preserve evidence-backed company fields only.
             </CardDescription>
           </CardHeader>
           <CardContent>
             <form className="space-y-4" onSubmit={handleBatchVerify}>
               <label className="flex flex-col gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
                 Company List (CSV format)
-                <textarea 
-                  value={batchInput} 
-                  onChange={(event) => setBatchInput(event.target.value)} 
+                <textarea
+                  value={batchInput}
+                  onChange={(event) => setBatchInput(event.target.value)}
                   rows={8}
-                  className="rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-primary-400 focus:ring-2 focus:ring-primary-100 dark:border-stone-700 dark:bg-stone-900 dark:text-white font-mono" 
+                  className="font-mono rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-primary-400 focus:ring-2 focus:ring-primary-100 dark:border-stone-700 dark:bg-stone-900 dark:text-white"
                   placeholder={'Siemens Energy, Berlin Germany\nABB E-mobility, Zurich Switzerland\nTesla Energy, Austin USA'}
                   required
                 />
@@ -178,29 +282,58 @@ export default function GoogleMapsVerify() {
             </form>
 
             {batchResults.length > 0 ? (
-              <div className="mt-6 space-y-3 max-h-[600px] overflow-y-auto">
-                {batchResults.map((result, index) => (
-                  <div key={index} className={`rounded-2xl border p-4 ${result.verified ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-900/30 dark:bg-emerald-900/10' : 'border-red-200 bg-red-50 dark:border-red-900/30 dark:bg-red-900/10'}`}>
-                    <div className="flex items-center gap-2 text-sm font-semibold">
-                      {result.verified ? <CheckCircle2 className="h-4 w-4 text-emerald-600" /> : <XCircle className="h-4 w-4 text-red-600" />}
-                      <span className={result.verified ? 'text-emerald-800 dark:text-emerald-200' : 'text-red-800 dark:text-red-200'}>
-                        {result.input.name}
-                      </span>
+              <div className="mt-6 space-y-3 max-h-[680px] overflow-y-auto">
+                {batchResults.map((result, index) => {
+                  const sourceUrl = buildSourceUrl(result.match)
+
+                  return (
+                    <div
+                      key={`${result.input.name}-${index}`}
+                      className={`rounded-2xl border p-4 ${result.verified ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-900/30 dark:bg-emerald-900/10' : 'border-red-200 bg-red-50 dark:border-red-900/30 dark:bg-red-900/10'}`}
+                    >
+                      <div className="flex items-center gap-2 text-sm font-semibold">
+                        {result.verified ? <CheckCircle2 className="h-4 w-4 text-emerald-600" /> : <XCircle className="h-4 w-4 text-red-600" />}
+                        <span className={result.verified ? 'text-emerald-800 dark:text-emerald-200' : 'text-red-800 dark:text-red-200'}>
+                          {result.input.name}
+                        </span>
+                      </div>
+
+                      {result.verified && result.match ? (
+                        <div className="mt-3 space-y-3 text-xs text-emerald-700 dark:text-emerald-300">
+                          <div className="grid gap-3 md:grid-cols-2">
+                            <InfoBlock
+                              title="Verified Output"
+                              lines={[
+                                `Address: ${result.match.address || 'N/A'}`,
+                                `Phone: ${result.match.phone || 'N/A'}`,
+                                `Website: ${result.match.website || 'N/A'}`,
+                                `Business Status: ${formatStatus(result.match.businessStatus)}`
+                              ]}
+                            />
+                            <InfoBlock
+                              title="Evidence Meta"
+                              lines={[
+                                `Provider: ${result.match.provider || 'google-maps'}`,
+                                `Query Label: ${result.match.queryLabel || 'company'}`,
+                                `Source URL: ${sourceUrl || 'N/A'}`,
+                                `Workflow Origin: google-maps-batch-verify`
+                              ]}
+                            />
+                          </div>
+                          {sourceUrl ? (
+                            <a href={sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-primary-600 hover:text-primary-700">
+                              Open evidence <ExternalLink className="h-3 w-3" />
+                            </a>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <div className="mt-2 text-xs text-red-700 dark:text-red-300">
+                          {result.message || result.error || 'Not found'}
+                        </div>
+                      )}
                     </div>
-                    {result.verified && result.match ? (
-                      <div className="mt-2 space-y-1 text-xs text-emerald-700 dark:text-emerald-300">
-                        <div><strong>Address:</strong> {result.match.address}</div>
-                        <div><strong>Phone:</strong> {result.match.phone || 'N/A'}</div>
-                        <div><strong>Website:</strong> {result.match.website ? <a href={result.match.website} target="_blank" rel="noreferrer" className="underline">{result.match.website}</a> : 'N/A'}</div>
-                        <div><strong>Rating:</strong> {result.match.rating || 'N/A'} | <strong>Status:</strong> {result.match.businessStatus}</div>
-                      </div>
-                    ) : (
-                      <div className="mt-2 text-xs text-red-700 dark:text-red-300">
-                        {result.message || result.error || 'Not found'}
-                      </div>
-                    )}
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             ) : null}
           </CardContent>
