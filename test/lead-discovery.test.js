@@ -2,6 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import express from 'express'
+import { createGoogleMapsAdapter } from '../server/modules/leads/providers/google-maps-adapter.js'
+import { createGoogleMapsSearchService } from '../server/modules/leads/application/services/google-maps-search-service.js'
+
 import { createLeadDiscoveryService } from '../server/modules/leads/application/services/lead-discovery-service.js'
 import { createOsintParserFacade } from '../server/modules/leads/application/osint/osint-parser-facade.js'
 import { createOsintResearchService } from '../server/modules/leads/application/services/osint-research-service.js'
@@ -837,3 +840,99 @@ test('server mounts the OSINT router under lead workspaces exactly once and befo
   assert.ok(mountIndex < putCompanyIndex)
   assert.ok(mountIndex < getWorkspaceIndex)
 })
+
+
+test('google maps adapter and search service return a non-empty company result shape with provider metadata', async () => {
+  const originalFetch = globalThis.fetch
+  const fetchCalls = []
+
+  globalThis.fetch = async (url, options = {}) => {
+    fetchCalls.push({ url, options })
+
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          places: [
+            {
+              id: 'place-berlin-switchgear-1',
+              displayName: { text: 'Berlin Switchgear GmbH' },
+              formattedAddress: 'Alexanderplatz 1, 10178 Berlin, Germany',
+              location: { latitude: 52.5219, longitude: 13.4132 },
+              rating: 4.7,
+              userRatingCount: 128,
+              businessStatus: 'OPERATIONAL',
+              primaryType: 'industrial_equipment_supplier',
+              types: ['industrial_equipment_supplier', 'point_of_interest', 'establishment'],
+              websiteUri: 'https://berlin-switchgear.example',
+              nationalPhoneNumber: '+49 30 222222'
+            }
+          ]
+        }
+      }
+    }
+  }
+
+  try {
+    const googleMapsAdapter = createGoogleMapsAdapter({ apiKey: 'test-google-maps-key' })
+    const googleMapsSearchService = createGoogleMapsSearchService({ googleMapsAdapter })
+
+    const result = await googleMapsSearchService.search({
+      query: 'industrial connector supplier',
+      location: 'Berlin, Germany',
+      filters: {
+        minRating: 4,
+        requireWebsite: true,
+        requirePhone: true,
+        requireOperational: true,
+        maxResults: 5,
+        includeEmails: false
+      }
+    })
+
+    assert.equal(fetchCalls.length, 1)
+    assert.equal(fetchCalls[0].url, 'https://places.googleapis.com/v1/places:searchText')
+    assert.equal(fetchCalls[0].options.method, 'POST')
+    assert.equal(fetchCalls[0].options.headers['X-Goog-Api-Key'], 'test-google-maps-key')
+    assert.match(fetchCalls[0].options.headers['X-Goog-FieldMask'], /places\.userRatingCount/)
+    assert.deepEqual(JSON.parse(fetchCalls[0].options.body), {
+      textQuery: 'industrial connector supplier in Berlin, Germany',
+      maxResultCount: 5
+    })
+
+    assert.equal(result.query, 'industrial connector supplier in Berlin, Germany')
+    assert.equal(result.count, 1)
+    assert.equal(result.results.length, 1)
+
+    const company = result.results[0]
+    assert.equal(company.provider, 'google-maps')
+    assert.equal(company.query, 'industrial connector supplier in Berlin, Germany')
+    assert.equal(company.queryLabel, 'company')
+    assert.equal(company.title, 'Berlin Switchgear GmbH')
+    assert.equal(company.snippet, 'Alexanderplatz 1, 10178 Berlin, Germany')
+    assert.equal(company.address, 'Alexanderplatz 1, 10178 Berlin, Germany')
+    assert.equal(company.phone, '+49 30 222222')
+    assert.equal(company.url, 'https://berlin-switchgear.example')
+    assert.equal(company.googlePlaceId, 'place-berlin-switchgear-1')
+    assert.equal(company.googleRating, 4.7)
+    assert.equal(company.googleBusinessStatus, 'OPERATIONAL')
+    assert.deepEqual(company.googleTypes, ['industrial_equipment_supplier', 'point_of_interest', 'establishment'])
+    assert.equal(typeof company.capturedAt, 'string')
+    assert.deepEqual(company.metadata, {
+      googlePlaceId: 'place-berlin-switchgear-1',
+      googleRating: 4.7,
+      googleReviewCount: 128,
+      googleBusinessStatus: 'OPERATIONAL',
+      googleTypes: ['industrial_equipment_supplier', 'point_of_interest', 'establishment'],
+      googlePrimaryType: 'industrial_equipment_supplier',
+      geo: { latitude: 52.5219, longitude: 13.4132 }
+    })
+    assert.equal(company.metadata.googleReviewCount, 128)
+    assert.equal(company.metadata.googlePrimaryType, 'industrial_equipment_supplier')
+    assert.equal(company.metadata.geo.latitude, 52.5219)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+

@@ -896,3 +896,192 @@ test('lead export router returns full customer-data XLSX workbook with complete 
   }
 })
 
+
+test('lead support and export routers prove successful gist-backed read update and customer-data workbook export locally', async () => {
+  const operations = []
+  let document = {
+    customers: [{ id: 'customer-qa-1', name: 'QA Customer', owner: 'Marta' }],
+    leads: [{ id: 'lead-qa-1', status: 'researching', notes: 'Initial import' }],
+    leadWorkspaces: [buildWorkspace({ id: 'workspace-qa-1' })],
+    countries: [{ code: 'DE', name: 'Germany' }],
+    keywords: ['mc4'],
+    searchKeywords: ['industrial connector berlin'],
+    companies: [{
+      id: 'catalog-qa-1',
+      name: 'Berlin Switchgear GmbH',
+      website: 'https://berlin-switchgear.example',
+      address: 'Alexanderplatz 1, Berlin, Germany',
+      phone: '+49 30 222222'
+    }],
+    websites: [{ id: 'website-qa-1', url: 'https://berlin-switchgear.example', source: 'google-maps' }],
+    evidence: [{ id: 'evidence-qa-1', provider: 'google-maps', snippet: 'Alexanderplatz 1, Berlin, Germany' }],
+    providerMetadata: {
+      googleMaps: {
+        queries: 1,
+        lastQuery: 'industrial connector berlin'
+      }
+    },
+    lastSyncedAt: '2026-06-08T02:00:00.000Z',
+    lastSyncSource: 'qa-local-read'
+  }
+
+  const gistCustomerDataService = {
+    getConfigurationStatus() {
+      return { configured: true, missingEnvVars: [], fileName: 'customer-data.json' }
+    },
+    async readCustomerData() {
+      operations.push('read')
+      return {
+        success: true,
+        storage: 'gist',
+        gistId: 'gist-success-123',
+        fileName: 'customer-data.json',
+        exists: true,
+        updatedAt: document.lastSyncedAt,
+        data: document
+      }
+    },
+    async updateCustomerData(data) {
+      operations.push('update')
+      document = {
+        ...data,
+        lastSyncedAt: '2026-06-08T02:05:00.000Z',
+        lastSyncSource: 'qa-local-update'
+      }
+      return {
+        success: true,
+        storage: 'gist',
+        gistId: 'gist-success-123',
+        fileName: 'customer-data.json',
+        exists: true,
+        updatedAt: document.lastSyncedAt,
+        data: document
+      }
+    }
+  }
+
+  const app = express()
+  app.use(express.json())
+  app.use('/api', createLeadSupportRouter({
+    addressClassificationService: {
+      async batchClassify() {
+        return { results: [] }
+      }
+    },
+    companySimilarityService: {
+      async findSimilarCompanies() {
+        return []
+      }
+    },
+    gistCustomerDataService,
+    providerAvailability: {
+      googleMaps: { available: true, missingEnvVars: [] },
+      tavily: { available: true, missingEnvVars: [] }
+    }
+  }))
+  app.use('/api', createLeadExportRouter({
+    leadWorkspaceRepository: {
+      async getById() {
+        return null
+      }
+    },
+    gistCustomerDataService
+  }))
+
+  const server = await new Promise((resolve) => {
+    const instance = app.listen(0, () => resolve(instance))
+  })
+
+  try {
+    const address = server.address()
+    const baseUrl = `http://127.0.0.1:${address.port}`
+
+    const readResponse = await fetch(`${baseUrl}/api/customer-data`)
+    assert.equal(readResponse.status, 200)
+    const readPayload = await readResponse.json()
+    assert.equal(readPayload.success, true)
+    assert.equal(readPayload.configured, true)
+    assert.equal(readPayload.storage, 'gist')
+    assert.equal(readPayload.gistId, 'gist-success-123')
+    assert.equal(readPayload.fileName, 'customer-data.json')
+    assert.equal(readPayload.data.customers[0].name, 'QA Customer')
+    assert.equal(readPayload.data.providerMetadata.googleMaps.lastQuery, 'industrial connector berlin')
+
+    const updateResponse = await fetch(`${baseUrl}/api/customer-data`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          customers: [{ id: 'customer-qa-1', name: 'QA Customer', owner: 'Marta' }],
+          leads: [{ id: 'lead-qa-1', status: 'qualified', notes: 'Workbook proof ready' }],
+          leadWorkspaces: [buildWorkspace({ id: 'workspace-qa-2' })],
+          countries: [{ code: 'DE', name: 'Germany' }],
+          keywords: ['mc4'],
+          searchKeywords: ['industrial connector berlin'],
+          companies: [{
+            id: 'catalog-qa-2',
+            name: 'Updated Berlin Switchgear GmbH',
+            website: 'https://berlin-switchgear.example',
+            address: 'Alexanderplatz 1, Berlin, Germany',
+            phone: '+49 30 222222',
+            source: 'google-maps'
+          }],
+          websites: [{ id: 'website-qa-1', url: 'https://berlin-switchgear.example', source: 'google-maps' }],
+          evidence: [{ id: 'evidence-qa-1', provider: 'google-maps', snippet: 'Alexanderplatz 1, Berlin, Germany' }],
+          providerMetadata: {
+            googleMaps: {
+              queries: 2,
+              lastQuery: 'industrial connector berlin company'
+            }
+          }
+        }
+      })
+    })
+    assert.equal(updateResponse.status, 200)
+    const updatePayload = await updateResponse.json()
+    assert.equal(updatePayload.success, true)
+    assert.equal(updatePayload.updatedAt, '2026-06-08T02:05:00.000Z')
+    assert.equal(updatePayload.data.leads[0].status, 'qualified')
+    assert.equal(updatePayload.data.companies[0].name, 'Updated Berlin Switchgear GmbH')
+    assert.equal(updatePayload.data.providerMetadata.googleMaps.queries, 2)
+
+    const exportResponse = await fetch(`${baseUrl}/api/customer-data/export.xlsx`)
+    assert.equal(exportResponse.status, 200)
+    assert.equal(exportResponse.headers.get('content-type'), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    assert.match(exportResponse.headers.get('content-disposition') || '', /customer-data-export\.xlsx/)
+
+    const workbook = readWorkbookFromResponseBuffer(await exportResponse.arrayBuffer())
+    const summaryRows = getSheetRows(workbook, 'Document Summary')
+    assert.equal(summaryRows[0].workflowSource, 'qa-local-update')
+    assert.equal(summaryRows[0].workspaceCount, 1)
+
+    const leadRows = getSheetRows(workbook, 'Leads')
+    assert.equal(leadRows[0].status, 'qualified')
+    assert.equal(leadRows[0].notes, 'Workbook proof ready')
+
+    const companyRows = getSheetRows(workbook, 'Company Catalog')
+    assert.equal(companyRows[0].name, 'Updated Berlin Switchgear GmbH')
+    assert.equal(companyRows[0].address, 'Alexanderplatz 1, Berlin, Germany')
+    assert.equal(companyRows[0].phone, "'+49 30 222222")
+    assert.equal(companyRows[0].source, 'google-maps')
+
+    const providerRows = getSheetRows(workbook, 'Provider Metadata')
+    assert.equal(providerRows[0].provider, 'googleMaps')
+    assert.equal(providerRows[0]['metadata.queries'], 2)
+    assert.equal(providerRows[0]['metadata.lastQuery'], 'industrial connector berlin company')
+
+    assert.deepEqual(operations, ['read', 'update', 'read'])
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error)
+          return
+        }
+        resolve()
+      })
+    })
+  }
+})
+
+

@@ -2,7 +2,7 @@
   "name": "apply-bot",
   "version": "1.0.0",
   "type": "module",
-  "description": "AI-powered job application filter tool with visual interface",
+  "description": "Foreign-trade lead generation workspace with provider-backed discovery, verification, Gist sync, and Excel export",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
