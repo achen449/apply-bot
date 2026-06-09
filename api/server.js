@@ -1,8 +1,9 @@
 import app from '../server.js'
 
-// Vercel's Node.js runtime can serve an Express app directly.
-// This module is the explicit serverless boundary for `/api/*` rewrites
-// and intentionally avoids starting a listener.
-export const handler = app
+// Vercel serverless function handler
+// Wraps Express app to conform to Vercel's (req, res) => {} signature
+const handler = (req, res) => {
+  return app(req, res)
+}
 
 export default handler
