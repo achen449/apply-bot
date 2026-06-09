@@ -1,0 +1,59 @@
+﻿/* Mobile Responsive Styles */
+@media (max-width: 768px) {
+  /* Base adjustments */
+  body {
+    font-size: 14px;
+  }
+  
+  /* Container adjustments */
+  .container {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+  
+  /* Button adjustments */
+  button, .btn {
+    padding: 0.5rem 1rem;
+    font-size: 14px;
+  }
+  
+  /* Form inputs */
+  input, textarea, select {
+    font-size: 16px; /* Prevents zoom on iOS */
+  }
+  
+  /* Tables */
+  table {
+    display: block;
+    overflow-x: auto;
+  }
+  
+  /* Cards */
+  .card {
+    margin-bottom: 1rem;
+  }
+  
+  /* Navigation */
+  nav {
+    flex-direction: column;
+  }
+  
+  /* Grid layouts */
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 480px) {
+  body {
+    font-size: 12px;
+  }
+  
+  h1 {
+    font-size: 1.5rem;
+  }
+  
+  h2 {
+    font-size: 1.25rem;
+  }
+}
