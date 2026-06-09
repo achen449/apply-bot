@@ -209,6 +209,7 @@ if (!fs.existsSync(dataDir)) {
 
 leadWorkspaceRepository.init()
 
+/* DISABLED FOR VERCEL - multer configuration
 // Configure multer for file uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -235,6 +236,7 @@ const upload = multer({
     }
   }
 })
+*/
 
 app.use(cors())
 app.use(express.json())
