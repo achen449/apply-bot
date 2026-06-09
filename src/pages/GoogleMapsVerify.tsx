@@ -1,5 +1,6 @@
 import { FormEvent, useState } from 'react'
-import { CheckCircle2, ExternalLink, Loader2, MapPin, ShieldCheck, XCircle } from 'lucide-react'
+import * as XLSX from 'xlsx'
+import { CheckCircle2, Download, ExternalLink, Loader2, MapPin, ShieldCheck, XCircle } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import {
@@ -9,6 +10,67 @@ import {
   type GoogleMapsMatch,
   type GoogleMapsVerificationResult
 } from '@/lib/leadApi'
+
+type WorkbookRow = Record<string, string | number | boolean | null | undefined>
+
+const companyNameHeaders = ['company name', 'company', 'name', '公司名称', '公司名', '客户名称', '客户名', '企业名称']
+const addressHeaders = ['address', 'location', 'country', 'city', 'state', 'province', '公司地址', '地址', '国家', '城市', '地区', '省份']
+
+function normalizeHeader(value: string) {
+  return value.trim().toLowerCase().replace(/[\s_\-/()（）]/g, '')
+}
+
+function getCellValue(row: WorkbookRow, headers: string[]) {
+  const normalizedHeaders = headers.map(normalizeHeader)
+  const entry = Object.entries(row).find(([key]) => normalizedHeaders.includes(normalizeHeader(key)))
+  const value = entry?.[1]
+  return value === undefined || value === null ? '' : String(value).trim()
+}
+
+function rowToCompany(row: WorkbookRow) {
+  const name = getCellValue(row, companyNameHeaders)
+  const address = Object.entries(row)
+    .filter(([key]) => addressHeaders.map(normalizeHeader).includes(normalizeHeader(key)))
+    .map(([, value]) => value === undefined || value === null ? '' : String(value).trim())
+    .filter(Boolean)
+    .join(', ')
+
+  return { name, address }
+}
+
+function exportBatchResultsXLSX(results: BatchVerificationResult[], sourceRows: WorkbookRow[] = []) {
+  if (!results.length) {
+    return
+  }
+
+  const rows = results.map((result, index) => ({
+    ...(sourceRows[index] || {}),
+    inputCompanyName: result.input.name,
+    inputAddress: result.input.address || '',
+    verified: result.verified ? 'YES' : 'NO',
+    matchedCompanyName: result.match?.name || '',
+    website: result.match?.website || '',
+    phone: result.match?.phone || '',
+    googleAddress: result.match?.address || '',
+    rating: result.match?.rating || '',
+    reviewCount: result.match?.reviewCount || 0,
+    businessStatus: result.match?.businessStatus || '',
+    types: (result.match?.types || []).join('; '),
+    placeId: result.match?.placeId || '',
+    evidenceUrl: buildSourceUrl(result.match),
+    note: result.message || result.error || ''
+  }))
+
+  const workbook = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), 'Verified Companies')
+  const workbookBuffer = XLSX.write(workbook, { type: 'array', bookType: 'xlsx', compression: true })
+  const blob = new Blob([workbookBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+  const link = document.createElement('a')
+  link.href = URL.createObjectURL(blob)
+  link.download = `google-maps-verified-${Date.now()}.xlsx`
+  link.click()
+  URL.revokeObjectURL(link.href)
+}
 
 function buildWorkflowHint(message: string) {
   if (message.includes('GOOGLE_MAPS_API_KEY')) {
@@ -117,6 +179,7 @@ export default function GoogleMapsVerify() {
   const [isBatchVerifying, setIsBatchVerifying] = useState(false)
   const [batchResults, setBatchResults] = useState<BatchVerificationResult[]>([])
   const [batchError, setBatchError] = useState('')
+  const [batchSourceRows, setBatchSourceRows] = useState<WorkbookRow[]>([])
 
   async function handleSingleVerify(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -152,7 +215,7 @@ export default function GoogleMapsVerify() {
             address: parts.slice(1).join(', ')
           }
         })
-        .filter((company) => company.name && company.address)
+        .filter((company) => company.name)
 
       if (companies.length === 0) {
         setBatchError('No valid companies found. Use format: Company Name, Address (one per line).')
@@ -167,6 +230,36 @@ export default function GoogleMapsVerify() {
       setBatchError(buildWorkflowHint(message))
     } finally {
       setIsBatchVerifying(false)
+    }
+  }
+
+  async function handleWorkbookImport(file: File) {
+    setBatchError('')
+
+    try {
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' })
+      const firstSheetName = workbook.SheetNames[0]
+      const firstSheet = firstSheetName ? workbook.Sheets[firstSheetName] : null
+
+      if (!firstSheet) {
+        setBatchError('Excel 文件里没有可读取的工作表。')
+        return
+      }
+
+      const rows = XLSX.utils.sheet_to_json<WorkbookRow>(firstSheet, { defval: '' })
+      const companies = rows.map(rowToCompany).filter((company) => company.name)
+
+      if (!companies.length) {
+        setBatchError('Excel 里没有识别到公司名称列。支持 Company Name / Company / Name / 公司名称 等表头。')
+        return
+      }
+
+      setBatchInput(companies.map((company) => [company.name, company.address].filter(Boolean).join(', ')).join('\n'))
+      setBatchSourceRows(rows)
+      setBatchResults([])
+    } catch (importError) {
+      console.error(importError)
+      setBatchError('Excel 文件读取失败，请确认是 .xlsx 格式。')
     }
   }
 
@@ -255,19 +348,33 @@ export default function GoogleMapsVerify() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-xl">
               <MapPin className="h-5 w-5 text-primary-600" />
-              Batch CSV Verification
+              Batch Excel Verification
             </CardTitle>
             <CardDescription>
-              Paste CSV data or Excel-exported text. Format: Company Name, Address (one per line). Results should preserve evidence-backed company fields only.
+              上传 .xlsx 或粘贴表格文本。系统会按公司名称搜索，并把官网、电话、地址和证据链接补到导出的 Excel 里。
             </CardDescription>
           </CardHeader>
           <CardContent>
             <form className="space-y-4" onSubmit={handleBatchVerify}>
               <label className="flex flex-col gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
-                Company List (CSV format)
+                Company List
+                <input
+                  type="file"
+                  accept=".xlsx,.xls"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0]
+                    if (file) {
+                      void handleWorkbookImport(file)
+                    }
+                  }}
+                  className="rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-primary-400 focus:ring-2 focus:ring-primary-100 dark:border-stone-700 dark:bg-stone-900 dark:text-white"
+                />
                 <textarea
                   value={batchInput}
-                  onChange={(event) => setBatchInput(event.target.value)}
+                  onChange={(event) => {
+                    setBatchInput(event.target.value)
+                    setBatchSourceRows([])
+                  }}
                   rows={8}
                   className="font-mono rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-primary-400 focus:ring-2 focus:ring-primary-100 dark:border-stone-700 dark:bg-stone-900 dark:text-white"
                   placeholder={'Siemens Energy, Berlin Germany\nABB E-mobility, Zurich Switzerland\nTesla Energy, Austin USA'}
@@ -278,6 +385,12 @@ export default function GoogleMapsVerify() {
                 {isBatchVerifying ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
                 Verify All Companies
               </Button>
+              {batchResults.length > 0 ? (
+                <Button type="button" variant="outline" onClick={() => exportBatchResultsXLSX(batchResults, batchSourceRows)} className="w-full">
+                  <Download className="mr-2 h-4 w-4" />
+                  导出补全后的 Excel
+                </Button>
+              ) : null}
               {batchError ? <div className="text-sm text-red-600 dark:text-red-400">{batchError}</div> : null}
             </form>
 

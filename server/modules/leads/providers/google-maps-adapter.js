@@ -13,6 +13,8 @@ export function createGoogleMapsAdapter({ apiKey }) {
       maxResults = 20
     } = options
 
+    const maxResultCount = Math.min(Math.max(Number.parseInt(maxResults, 10) || 20, 1), 20)
+
     try {
       const response = await fetch('https://places.googleapis.com/v1/places:searchText', {
         method: 'POST',
@@ -23,12 +25,16 @@ export function createGoogleMapsAdapter({ apiKey }) {
         },
         body: JSON.stringify({
           textQuery: query,
-          maxResultCount: maxResults
+          maxResultCount
         })
       })
 
       if (!response.ok) {
-        throw new Error(`Google Places API returned ${response.status}`)
+        const responseText = await response.text().catch(() => '')
+        const error = new Error(`Google Places API returned ${response.status}${responseText ? `: ${responseText.slice(0, 240)}` : ''}`)
+        error.code = 'google_places_request_failed'
+        error.status = response.status === 401 || response.status === 403 ? 502 : response.status
+        throw error
       }
 
       const data = await response.json()
@@ -72,7 +78,7 @@ export function createGoogleMapsAdapter({ apiKey }) {
       return results
     } catch (error) {
       console.error('Google Maps search failed:', error.message)
-      return []
+      throw error
     }
   }
 

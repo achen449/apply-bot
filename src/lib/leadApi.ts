@@ -138,7 +138,7 @@ export async function verifyCompanyWithGoogleMaps(companyName: string, address: 
 
 export interface BatchVerificationInput {
   name: string
-  address: string
+  address?: string
 }
 
 export interface BatchVerificationResult {

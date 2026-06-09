@@ -1,4 +1,5 @@
 import { FormEvent, useMemo, useState } from 'react'
+import * as XLSX from 'xlsx'
 import { Building2, Download, ExternalLink, Globe2, Loader2, Mail, MapPin, Phone, Search, Star } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -46,10 +47,6 @@ function normalizeWebsite(value: string) {
   }
 
   return /^https?:\/\//i.test(value) ? value : `https://${value}`
-}
-
-function buildCsvCell(value: string | number) {
-  return `"${String(value ?? '').replace(/"/g, '""')}"`
 }
 
 function PlaceResultCard({ result }: { result: GoogleMapsPlace }) {
@@ -245,53 +242,38 @@ export default function GoogleMapsSearch() {
     }
   }
 
-  function handleExportCSV() {
+  function handleExportXLSX() {
     if (!searchResults || searchResults.results.length === 0) {
       return
     }
 
-    const headers = [
-      '公司名称',
-      '地址',
-      '电话',
-      '官网',
-      '评分',
-      '评论数',
-      '营业状态',
-      '主类型',
-      '全部类型',
-      '公开邮箱',
-      'Provider',
-      'Workflow Origin',
-      'Source URL',
-      'Query',
-      'Captured At'
-    ]
+    const rows = searchResults.results.map((result) => ({
+      companyName: result.title || '',
+      address: result.address || '',
+      phone: result.phone || '',
+      website: result.url || '',
+      rating: result.googleRating || '',
+      reviewCount: result.googleReviewCount || 0,
+      businessStatus: result.googleBusinessStatus || '',
+      primaryType: result.googlePrimaryType || '',
+      types: (result.googleTypes || []).join('; '),
+      publicEmails: (result.emails || []).join('; '),
+      provider: result.provider || 'google-maps',
+      workflowOrigin: 'google-maps-search',
+      sourceUrl: result.url || `https://www.google.com/maps/place/?q=place_id:${result.googlePlaceId}`,
+      query: result.query || '',
+      capturedAt: result.capturedAt || ''
+    }))
 
-    const rows = searchResults.results.map((result) => [
-      result.title || '',
-      result.address || '',
-      result.phone || '',
-      result.url || '',
-      result.googleRating?.toString() || '',
-      result.googleReviewCount?.toString() || '0',
-      result.googleBusinessStatus || '',
-      result.googlePrimaryType || '',
-      (result.googleTypes || []).join('; '),
-      (result.emails || []).join('; '),
-      result.provider || 'google-maps',
-      'google-maps-search',
-      result.url || `https://www.google.com/maps/place/?q=place_id:${result.googlePlaceId}`,
-      result.query || '',
-      result.capturedAt || ''
-    ])
-
-    const csv = [headers, ...rows].map((row) => row.map(buildCsvCell).join(',')).join('\n')
-    const blob = new Blob([`\ufeff${csv}`], { type: 'text/csv;charset=utf-8;' })
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), 'Google Maps Leads')
+    const workbookBuffer = XLSX.write(workbook, { type: 'array', bookType: 'xlsx', compression: true })
+    const blob = new Blob([workbookBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
     const link = document.createElement('a')
     link.href = URL.createObjectURL(blob)
-    link.download = `google-maps-search-${Date.now()}.csv`
+    link.download = `google-maps-search-${Date.now()}.xlsx`
     link.click()
+    URL.revokeObjectURL(link.href)
   }
 
   return (
@@ -361,8 +343,6 @@ export default function GoogleMapsSearch() {
                 >
                   <option value="10">10</option>
                   <option value="20">20</option>
-                  <option value="40">40</option>
-                  <option value="60">60</option>
                 </select>
               </label>
             </div>
@@ -407,9 +387,9 @@ export default function GoogleMapsSearch() {
                 开始搜索
               </Button>
               {searchResults && searchResults.results.length > 0 ? (
-                <Button type="button" onClick={handleExportCSV} variant="outline">
+                <Button type="button" onClick={handleExportXLSX} variant="outline">
                   <Download className="mr-2 h-4 w-4" />
-                  导出 CSV
+                  导出 Excel
                 </Button>
               ) : null}
             </div>

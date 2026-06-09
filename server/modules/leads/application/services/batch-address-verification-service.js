@@ -6,18 +6,18 @@ export function createBatchAddressVerificationService({ googleMapsAdapter }) {
       const results = []
 
       for (const company of companies) {
-        if (!company.name || !company.address) {
+        if (!company.name) {
           results.push({
             input: company,
             verified: false,
             match: null,
-            error: 'Missing name or address'
+            error: 'Missing company name'
           })
           continue
         }
 
         try {
-          const query = `${company.name} ${company.address}`
+          const query = [company.name, company.address].filter(Boolean).join(' ')
           const searchResults = await googleMapsAdapter.searchText(query, { maxResults: 1 })
 
           if (!searchResults.length) {

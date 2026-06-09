@@ -17,7 +17,7 @@ export function createGoogleMapsSearchService({ googleMapsAdapter }) {
         minRating,
         requireWebsite,
         requireOperational,
-        maxResults
+        maxResults: Math.min(Math.max(Number.parseInt(maxResults, 10) || 20, 1), 20)
       })
 
       let results = requirePhone ? places.filter((place) => place.phone) : places

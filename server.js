@@ -126,6 +126,14 @@ function sendLeadServiceError(res, error, fallbackMessage) {
     })
   }
 
+  if (error?.code === 'google_places_request_failed') {
+    return res.status(error.status || 502).json({
+      success: false,
+      code: error.code,
+      error: error.message || fallbackMessage
+    })
+  }
+
   return res.status(error?.status || 500).json({
     success: false,
     code: error?.code || 'request_failed',
@@ -866,9 +874,19 @@ app.post('/api/lead-workspaces/discover', async (req, res) => {
     }
 
     const workspace = await leadDiscoveryService.discoverWorkspace({ industry, keywords, country, targetTypes, excludeTypes })
-    await leadWorkspaceRepository.prependAndTrim(workspace, 25)
+    const warnings = []
 
-    res.json({ workspace })
+    try {
+      await leadWorkspaceRepository.prependAndTrim(workspace, 25)
+    } catch (storageError) {
+      console.error('Error saving lead workspace:', storageError)
+      warnings.push({
+        code: storageError?.code || 'workspace_storage_failed',
+        message: 'Workspace was created, but storage sync failed. Check Gist settings before saving.'
+      })
+    }
+
+    res.json({ workspace, warnings })
   } catch (error) {
     console.error('Error creating lead workspace:', error)
     return sendLeadServiceError(res, error, 'Failed to create lead workspace')
@@ -945,15 +963,15 @@ app.post('/api/lead-workspaces/verify-google-maps', async (req, res) => {
       )
     }
 
-    if (!companyName || !address) {
-      return res.status(400).json({ error: 'companyName and address are required' })
+    if (!companyName) {
+      return res.status(400).json({ error: 'companyName is required' })
     }
 
     const result = await addressVerificationService.verifyCompanyAddress({ companyName, address })
     res.json(result)
   } catch (error) {
     console.error('Error verifying with Google Maps:', error)
-    res.status(500).json({ error: 'Failed to verify with Google Maps' })
+    return sendLeadServiceError(res, error, 'Failed to verify with Google Maps')
   }
 })
 
@@ -978,7 +996,7 @@ app.post('/api/google-maps/search', async (req, res) => {
     res.json(result)
   } catch (error) {
     console.error('Error searching Google Maps:', error)
-    res.status(500).json({ error: 'Failed to search Google Maps' })
+    return sendLeadServiceError(res, error, 'Failed to search Google Maps')
   }
 })
 
@@ -1003,7 +1021,7 @@ app.post('/api/lead-workspaces/batch-verify-csv', async (req, res) => {
     res.json(result)
   } catch (error) {
     console.error('Error batch verifying with Google Maps:', error)
-    res.status(500).json({ error: 'Failed to batch verify with Google Maps' })
+    return sendLeadServiceError(res, error, 'Failed to batch verify with Google Maps')
   }
 })
 
