@@ -50,7 +50,21 @@ import { createLeadExportRouter } from './server/modules/leads/routes/lead-expor
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
+
+// Enhanced logging for debugging
+console.log('[SERVER INIT] Starting server initialization...')
+console.log('[SERVER INIT] __dirname:', __dirname)
+console.log('[SERVER INIT] Loading environment variables...')
+
 const { TAVILY_API_KEY, BRAVE_API_KEY, GOOGLE_MAPS_API_KEY, GIST_ID, GITHUB_GIST_TOKEN, GIST_CUSTOMER_DATA_FILENAME } = loadServerEnv(__dirname)
+
+console.log('[SERVER INIT] Environment variables loaded:')
+console.log('[SERVER INIT] - TAVILY_API_KEY:', TAVILY_API_KEY ? '✓ Present' : '✗ Missing')
+console.log('[SERVER INIT] - BRAVE_API_KEY:', BRAVE_API_KEY ? '✓ Present' : '✗ Missing')
+console.log('[SERVER INIT] - GOOGLE_MAPS_API_KEY:', GOOGLE_MAPS_API_KEY ? '✓ Present' : '✗ Missing')
+console.log('[SERVER INIT] - GIST_ID:', GIST_ID ? '✓ Present' : '✗ Missing')
+console.log('[SERVER INIT] - GITHUB_GIST_TOKEN:', GITHUB_GIST_TOKEN ? '✓ Present' : '✗ Missing')
+console.log('[SERVER INIT] - GIST_CUSTOMER_DATA_FILENAME:', GIST_CUSTOMER_DATA_FILENAME || 'customer-data.json (default)')
 const gistCustomerDataService = createGistCustomerDataService({
   gistId: GIST_ID,
   githubToken: GITHUB_GIST_TOKEN,
