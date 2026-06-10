@@ -3,9 +3,7 @@ import cors from 'cors'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
-// import multer from 'multer' // Disabled for Vercel
 import net from 'net'
-// import { PDFParse } from 'pdf-parse' // Disabled for Vercel
 import { loadServerEnv } from './server/config/env.js'
 import { createLeadWorkspaceRepository } from './server/modules/leads/repositories/lead-workspace-repository.js'
 import { createTavilyAdapter } from './server/modules/leads/providers/tavily-adapter.js'
@@ -209,33 +207,6 @@ if (!fs.existsSync(dataDir)) {
 
 leadWorkspaceRepository.init()
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, dataDir)
-  },
-  filename: (req, file, cb) => {
-    // Keep original filename, but ensure it's a PDF
-    const ext = path.extname(file.originalname)
-    const name = path.basename(file.originalname, ext)
-    cb(null, `${name}${ext}`)
-  }
-})
-
-const upload = multer({
-  storage: storage,
-  limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB limit
-  },
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype === 'application/pdf' || file.originalname.endsWith('.pdf')) {
-      cb(null, true)
-    } else {
-      cb(new Error('Only PDF files are allowed'))
-    }
-  }
-})
-
 app.use(cors())
 app.use(express.json())
 
@@ -342,7 +313,7 @@ app.get('/api/resumes', (req, res) => {
         }
       })
       .sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime())
-    
+
     res.json(resumeFiles)
   } catch (error) {
     console.error('Error reading resume files:', error)
@@ -352,38 +323,10 @@ app.get('/api/resumes', (req, res) => {
 
 // Upload resume file
 app.post('/api/resumes/upload', (req, res) => {
-  console.log('Upload request received')
-  upload.single('resume')(req, res, (err) => {
-    if (err) {
-      console.error('Upload error:', err)
-      if (err instanceof multer.MulterError) {
-        if (err.code === 'LIMIT_FILE_SIZE') {
-          return res.status(400).json({ error: 'File too large. Maximum size is 10MB.' })
-        }
-        return res.status(400).json({ error: err.message || 'Upload error' })
-      }
-      return res.status(400).json({ error: err.message || 'Upload failed' })
-    }
-    
-    try {
-      if (!req.file) {
-        console.log('No file in request')
-        return res.status(400).json({ error: 'No file uploaded. Please select a PDF file.' })
-      }
-      
-      console.log('File uploaded successfully:', req.file.filename)
-      res.json({
-        success: true,
-        file: {
-          name: req.file.filename,
-          size: req.file.size,
-          uploadedAt: new Date().toISOString()
-        }
-      })
-    } catch (error) {
-      console.error('Error processing upload:', error)
-      res.status(500).json({ error: error.message || 'Failed to upload resume' })
-    }
+  res.status(410).json({
+    success: false,
+    code: 'resume_upload_disabled',
+    error: 'Resume PDF upload is disabled in the serverless lead-generation deployment.'
   })
 })
 
@@ -417,60 +360,11 @@ app.delete('/api/resumes/:filename', (req, res) => {
 
 // Parse resume and save to resume.txt
 app.post('/api/resumes/parse/:filename', async (req, res) => {
-  try {
-    const filename = decodeURIComponent(req.params.filename)
-    // Security: prevent directory traversal
-    if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
-      return res.status(400).json({ error: 'Invalid filename' })
-    }
-
-    const filePath = path.join(dataDir, filename)
-
-    // Only allow parsing PDF files
-    if (!filename.toLowerCase().endsWith('.pdf')) {
-      return res.status(400).json({ error: 'Only PDF files can be parsed' })
-    }
-
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'File not found' })
-    }
-
-    console.log('Parsing resume:', filename)
-
-    // Read PDF file buffer
-    const dataBuffer = fs.readFileSync(filePath)
-
-    // Parse the PDF using pdf-parse v2
-    const parser = new PDFParse({ data: dataBuffer })
-    const result = await parser.getText()
-    const text = result.text
-    console.log('Extracted text length:', text.length)
-
-    // Clean up the parser
-    await parser.destroy()
-
-    // Save raw text to resume.txt
-    fs.writeFileSync(resumeTxtPath, text, 'utf-8')
-    console.log('Resume text saved to resume.txt')
-
-    // Save metadata to resume-meta.json
-    const meta = {
-      sourceFile: filename,
-      parsedAt: new Date().toISOString(),
-      textLength: text.length
-    }
-    fs.writeFileSync(resumeMetaPath, JSON.stringify(meta, null, 2), 'utf-8')
-    console.log('Resume metadata saved to resume-meta.json')
-
-    res.json({
-      success: true,
-      sourceFile: filename,
-      textLength: text.length
-    })
-  } catch (error) {
-    console.error('Error parsing resume:', error)
-    res.status(500).json({ error: error.message || 'Failed to parse resume' })
-  }
+  res.status(410).json({
+    success: false,
+    code: 'resume_pdf_parse_disabled',
+    error: 'Resume PDF parsing is disabled in the serverless lead-generation deployment.'
+  })
 })
 
 // Get current parsed resume metadata
@@ -1043,4 +937,3 @@ export default app
 if (isDirectExecution()) {
   startServer()
 }
-
