@@ -8,6 +8,7 @@ import {
   validateOsintParserOutput
 } from '../../domain/osint/index.js'
 import { buildEvidenceBundleFromProviderRecords } from '../osint/provider-evidence-helpers.js'
+import { OSINT_COMPANY_REPORT_PROMPT } from '../prompts/osint-company-report.js'
 
 function normalizeText(value) {
   return typeof value === 'string' ? value.trim() : ''
@@ -449,6 +450,7 @@ export function createOsintResearchService({
   braveSearch,
   tavilySearch,
   parserFacade,
+  aiAnalysisService,
   providerAvailability = {}
 }) {
   async function research(rawInput = {}) {
@@ -529,6 +531,25 @@ export function createOsintResearchService({
       parserUsed: parserResult.used
     })
 
+    const aiStructuredReport = await aiAnalysisService?.generateJson?.({
+      systemPrompt: OSINT_COMPANY_REPORT_PROMPT,
+      userPrompt: JSON.stringify({
+        mode,
+        subject,
+        evidence: evidenceRecords.slice(0, 20).map((record) => ({
+          evidenceId: record.evidenceId,
+          provider: record.provider,
+          sourceUrl: record.sourceUrl,
+          title: record.title,
+          snippet: record.snippet,
+          fieldClaims: record.fieldClaims
+        })),
+        existingStructuredReport: parsedOutput.report
+      }, null, 2),
+      fallback: null,
+      temperature: 0.1
+    })
+
     const verification = createVerificationStatus({
       entityStatus: parsedOutput.summary.entityName ? 'discovered' : 'unverified',
       officialWebsiteStatus: parsedOutput.summary.officialWebsiteStatus || 'unverified',
@@ -583,6 +604,7 @@ export function createOsintResearchService({
         contract: parserFacade?.getContract ? parserFacade.getContract() : null
       },
       report: parsedOutput.report,
+      aiStructuredReport,
       findings: parsedOutput.findings,
       publicContacts: parsedOutput.publicContacts,
       riskFlags: parsedOutput.riskFlags,

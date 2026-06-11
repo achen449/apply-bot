@@ -115,11 +115,13 @@ export function createLeadSupportRouter({
         })
       }
 
-      const results = await companySimilarityService.findSimilarCompanies(company, toPositiveInteger(topN, 10))
+      const result = await companySimilarityService.findSimilarCompanies(company, toPositiveInteger(topN, 10))
       return res.json({
         success: true,
         configured: true,
-        results
+        runId: result.runId || null,
+        recommendations: result.recommendations || [],
+        results: result.results || []
       })
     } catch (error) {
       console.error('Error finding similar companies:', error)

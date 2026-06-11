@@ -70,7 +70,7 @@ export function createLeadDiscoveryService({
   buildWorkspaceFromCompanies = buildWorkspaceFromCompaniesModule,
   buildSeededWorkspace = buildSeededWorkspaceModule
 }) {
-  async function discoverRealCompanies({ industry, keywords = [], country = '', targetTypes = [], excludeTypes = [] }) {
+  async function discoverRealCompanies({ industry, keywords = [], country = '', targetTypes = [], excludeTypes = [], depth = 'standard' }) {
     const normalizedKeywords = dedupeStrings(keywords.map((keyword) => keyword.trim()).filter(Boolean))
     const selectedProfiles = buildIndustryCandidatesFn(industry, normalizedKeywords, country)
     const segmentHints = dedupeStrings(selectedProfiles.flatMap((profile) => profile.upstreamIndustries.slice(0, 3))).slice(0, 6)
@@ -84,10 +84,16 @@ export function createLeadDiscoveryService({
       JSON.stringify({ query: [normalizedKeywords[0], country].filter(Boolean).join(' '), label: 'company' })
     ]).map((item) => JSON.parse(item)).filter((item) => item.query && item.query.trim().length > 5)
 
+    const depthConfig = {
+      economy: { tavilyQueries: 4, braveQueries: 3, mapsQueries: 1, analyzeCandidates: 24, shortlist: 15 },
+      standard: { tavilyQueries: 8, braveQueries: 5, mapsQueries: 3, analyzeCandidates: 50, shortlist: 25 },
+      deep: { tavilyQueries: 12, braveQueries: 8, mapsQueries: 4, analyzeCandidates: 80, shortlist: 35 }
+    }[depth] || { tavilyQueries: 8, braveQueries: 5, mapsQueries: 3, analyzeCandidates: 50, shortlist: 25 }
+
     const providerResults = await Promise.all([
-      Promise.all(labeledQueries.slice(0, 4).map((query) => tavilySearch(query))),
-      Promise.all(braveQueries.map((query) => braveSearch(query))),
-      Promise.all(labeledQueries.slice(0, 2).map((query) => googleMapsSearch(query)))
+      Promise.all(labeledQueries.slice(0, depthConfig.tavilyQueries).map((query) => tavilySearch(query))),
+      Promise.all(braveQueries.slice(0, depthConfig.braveQueries).map((query) => braveSearch(query))),
+      Promise.all(labeledQueries.slice(0, depthConfig.mapsQueries).map((query) => googleMapsSearch(query)))
     ])
 
     const flattened = providerResults.flat(2).filter((item) => item && item.title)
@@ -100,7 +106,7 @@ export function createLeadDiscoveryService({
     }
 
     const analyzedCompanies = []
-    for (const candidate of dedupedCandidates.slice(0, 24)) {
+    for (const candidate of dedupedCandidates.slice(0, depthConfig.analyzeCandidates)) {
       const analyzed = await analyzeCompanyWebsite(candidate, normalizedKeywords, segmentHints, country)
 
       if (!companyMatchesTypeFilter(analyzed, strategy.targetTypes)) {
@@ -108,10 +114,6 @@ export function createLeadDiscoveryService({
       }
 
       if (companyMatchesTypeFilter(analyzed, strategy.excludeTypes)) {
-        continue
-      }
-
-      if (!analyzed.officialWebsiteLikely && analyzed.fitScore < 86) {
         continue
       }
 
@@ -130,25 +132,34 @@ export function createLeadDiscoveryService({
       return b.fitScore - a.fitScore
     })
 
-    const shortlistedCompanies = analyzedCompanies.slice(0, 15)
+    const candidatePool = analyzedCompanies
+      .filter((company) => company.fitScore >= 40)
+      .slice(0, depthConfig.analyzeCandidates)
+    const shortlistedCompanies = analyzedCompanies
+      .filter((company) => company.officialWebsiteLikely || company.fitScore >= 86)
+      .slice(0, depthConfig.shortlist)
     if (!shortlistedCompanies.length) {
       return null
     }
 
     const workspace = buildWorkspaceFromCompanies({ industry, country, keywords: normalizedKeywords }, shortlistedCompanies, selectedProfiles)
+    workspace.candidatePool = candidatePool
+    workspace.shortlist = shortlistedCompanies
+    workspace.discoveryDepth = depth
     workspace.providersUsed = dedupeStrings(shortlistedCompanies.flatMap((company) => company.matchedProviders || [company.source]).filter(Boolean))
     workspace.searchStrategy = {
       targetTypes: strategy.targetTypes,
       excludeTypes: strategy.excludeTypes,
       queryTemplates: strategy.queryTemplates,
       queryCount: queries.length,
+      executedQueryCount: depthConfig.tavilyQueries + braveQueries.length + depthConfig.mapsQueries,
       evidenceMode: 'multi-query-hit-weighting'
     }
     return workspace
   }
 
-  async function discoverWorkspace({ industry, keywords = [], country = '', targetTypes = [], excludeTypes = [] }) {
-    return await discoverRealCompanies({ industry, keywords, country, targetTypes, excludeTypes })
+  async function discoverWorkspace({ industry, keywords = [], country = '', targetTypes = [], excludeTypes = [], depth = 'standard' }) {
+    return await discoverRealCompanies({ industry, keywords, country, targetTypes, excludeTypes, depth })
       || buildSeededWorkspace({ industry, keywords, country })
   }
 

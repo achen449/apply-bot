@@ -1,22 +1,25 @@
 import { fetchJson } from '../../../infrastructure/http/fetch-json.js'
 import { buildProviderSearchResult, getQueryText } from './provider-result-normalizer.js'
 
-export function createTavilyAdapter({ apiKey }) {
+export function createTavilyAdapter({ apiKey, apiKeys = [] }) {
+  const keys = [...new Set([apiKey, ...apiKeys].filter(Boolean))]
+
   return {
     async search(queryConfig) {
       const query = getQueryText(queryConfig)
-      if (!apiKey || !query) {
+      if (!keys.length || !query) {
         return []
       }
 
-      try {
+      for (const key of keys) {
+        try {
         const data = await fetchJson('https://api.tavily.com/search', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
-            api_key: apiKey,
+            api_key: key,
             query,
             search_depth: 'advanced',
             max_results: 8,
@@ -35,10 +38,12 @@ export function createTavilyAdapter({ apiKey }) {
             publishedDate: result.published_date || ''
           }
         }))
-      } catch (error) {
-        console.error('Tavily search failed:', error.message)
-        return []
+        } catch (error) {
+          console.error('Tavily search failed:', error.message)
+        }
       }
+
+      return []
     }
   }
 }

@@ -17,6 +17,9 @@ const KNOWN_DOCUMENT_KEYS = new Set([
   'companies',
   'websites',
   'evidence',
+  'researchRuns',
+  'searchCache',
+  'apiUsage',
   'providerMetadata',
   'lastSyncedAt',
   'lastSyncSource'
@@ -51,6 +54,9 @@ function buildDefaultCustomerData() {
     companies: [],
     websites: [],
     evidence: [],
+    researchRuns: [],
+    searchCache: [],
+    apiUsage: [],
     providerMetadata: {}
   }
 }
@@ -267,7 +273,7 @@ function validateLeadWorkspace(workspace, fieldPath, errorFactory) {
 }
 
 function validateKnownSections(document, errorFactory) {
-  const arrayOfObjectsSections = ['customers', 'leads', 'countries', 'companies', 'websites', 'evidence']
+  const arrayOfObjectsSections = ['customers', 'leads', 'countries', 'companies', 'websites', 'evidence', 'researchRuns', 'searchCache', 'apiUsage']
   arrayOfObjectsSections.forEach((fieldName) => {
     if (document[fieldName] !== undefined) {
       assertObjectArray(document[fieldName], fieldName, errorFactory)

@@ -40,6 +40,10 @@ import { createAddressClassificationService } from './server/modules/leads/appli
 import { createCompanySimilarityService } from './server/modules/leads/application/services/company-similarity-service.js'
 import { createLeadDiscoveryService } from './server/modules/leads/application/services/lead-discovery-service.js'
 import { createGistCustomerDataService } from './server/modules/leads/application/services/gist-customer-data-service.js'
+import { createAiAnalysisService } from './server/modules/leads/application/services/ai-analysis-service.js'
+import { createApiBudgetService } from './server/modules/leads/application/services/api-budget-service.js'
+import { createResearchRunService } from './server/modules/leads/application/services/research-run-service.js'
+import { createMapLookupService } from './server/modules/leads/application/services/map-lookup-service.js'
 import { createOsintParserFacade } from './server/modules/leads/application/osint/osint-parser-facade.js'
 import { createOsintResearchService } from './server/modules/leads/application/services/osint-research-service.js'
 import { createLeadOsintRouter } from './server/modules/leads/routes/osint-routes.js'
@@ -48,21 +52,64 @@ import { createLeadExportRouter } from './server/modules/leads/routes/lead-expor
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
-const { TAVILY_API_KEY, BRAVE_API_KEY, GOOGLE_MAPS_API_KEY, GIST_ID, GITHUB_GIST_TOKEN, GIST_CUSTOMER_DATA_FILENAME } = loadServerEnv(__dirname)
+const {
+  TAVILY_API_KEY,
+  TAVILY_API_KEY_BACKUP,
+  BRAVE_API_KEY,
+  BRAVE_API_KEY_BACKUP,
+  GOOGLE_MAPS_API_KEY,
+  GIST_ID,
+  GITHUB_GIST_TOKEN,
+  GIST_CUSTOMER_DATA_FILENAME,
+  AI_API_HOST,
+  AI_API_KEY,
+  AI_MODEL,
+  AI_TIMEOUT_MS,
+  AI_MAX_TOKENS,
+  API_CACHE_TTL_HOURS,
+  API_DAILY_TAVILY_LIMIT,
+  API_DAILY_BRAVE_LIMIT,
+  API_DAILY_GOOGLE_MAPS_LIMIT,
+  API_DAILY_AI_LIMIT
+} = loadServerEnv(__dirname)
 const gistCustomerDataService = createGistCustomerDataService({
   gistId: GIST_ID,
   githubToken: GITHUB_GIST_TOKEN,
   fileName: GIST_CUSTOMER_DATA_FILENAME
 })
 const leadWorkspaceRepository = createLeadWorkspaceRepository(__dirname, { gistCustomerDataService })
-const tavilyAdapter = createTavilyAdapter({ apiKey: TAVILY_API_KEY })
-const braveAdapter = createBraveAdapter({ apiKey: BRAVE_API_KEY })
+const aiAnalysisService = createAiAnalysisService({
+  apiHost: AI_API_HOST,
+  apiKey: AI_API_KEY,
+  model: AI_MODEL,
+  timeoutMs: AI_TIMEOUT_MS,
+  maxTokens: AI_MAX_TOKENS
+})
+const apiBudgetService = createApiBudgetService({
+  cacheTtlHours: API_CACHE_TTL_HOURS,
+  dailyLimits: {
+    tavily: API_DAILY_TAVILY_LIMIT,
+    brave: API_DAILY_BRAVE_LIMIT,
+    googleMaps: API_DAILY_GOOGLE_MAPS_LIMIT,
+    ai: API_DAILY_AI_LIMIT
+  }
+})
+const researchRunService = createResearchRunService({ rootDir: __dirname, gistCustomerDataService })
+const tavilyAdapter = createTavilyAdapter({ apiKey: TAVILY_API_KEY, apiKeys: [TAVILY_API_KEY_BACKUP] })
+const braveAdapter = createBraveAdapter({ apiKey: BRAVE_API_KEY, apiKeys: [BRAVE_API_KEY_BACKUP] })
 const googleMapsAdapter = createGoogleMapsAdapter({ apiKey: GOOGLE_MAPS_API_KEY })
 const addressVerificationService = createAddressVerificationService({ googleMapsAdapter })
 const googleMapsSearchService = createGoogleMapsSearchService({ googleMapsAdapter })
 const batchAddressVerificationService = createBatchAddressVerificationService({ googleMapsAdapter })
 const addressClassificationService = createAddressClassificationService({ googleMapsAdapter })
-const companySimilarityService = createCompanySimilarityService({ tavilyAdapter })
+const mapLookupService = createMapLookupService({ googleMapsAdapter, apiBudgetService, researchRunService })
+const companySimilarityService = createCompanySimilarityService({
+  tavilyAdapter,
+  braveAdapter,
+  aiAnalysisService,
+  apiBudgetService,
+  researchRunService
+})
 const leadDiscoveryService = createLeadDiscoveryService({
   tavilySearch: (...args) => tavilyAdapter.search(...args),
   braveSearch: (...args) => braveAdapter.search(...args),
@@ -74,6 +121,7 @@ const osintResearchService = createOsintResearchService({
   braveSearch: (...args) => braveAdapter.search(...args),
   googleMapsSearch: (...args) => googleMapsAdapter.searchText(...args),
   parserFacade: osintParserFacade,
+  aiAnalysisService,
   providerAvailability: {
     tavily: Boolean(TAVILY_API_KEY),
     brave: Boolean(BRAVE_API_KEY),
@@ -92,6 +140,14 @@ const providerAvailability = {
   googleMaps: {
     available: Boolean(GOOGLE_MAPS_API_KEY),
     missingEnvVars: GOOGLE_MAPS_API_KEY ? [] : ['GOOGLE_MAPS_API_KEY']
+  },
+  ai: {
+    available: Boolean(AI_API_HOST && AI_API_KEY && AI_MODEL),
+    missingEnvVars: [
+      AI_API_HOST ? '' : 'AI_API_HOST',
+      AI_API_KEY ? '' : 'AI_API_KEY',
+      AI_MODEL ? '' : 'AI_MODEL'
+    ].filter(Boolean)
   }
 }
 
@@ -761,13 +817,13 @@ app.get('/api/lead-workspaces', async (req, res) => {
 
 app.post('/api/lead-workspaces/discover', async (req, res) => {
   try {
-    const { industry, keywords = [], country = '', targetTypes = [], excludeTypes = [] } = req.body
+    const { industry, keywords = [], country = '', targetTypes = [], excludeTypes = [], depth = 'standard' } = req.body
 
     if (!industry || typeof industry !== 'string') {
       return res.status(400).json({ error: 'Industry is required' })
     }
 
-    const workspace = await leadDiscoveryService.discoverWorkspace({ industry, keywords, country, targetTypes, excludeTypes })
+    const workspace = await leadDiscoveryService.discoverWorkspace({ industry, keywords, country, targetTypes, excludeTypes, depth })
     const warnings = []
 
     try {
@@ -798,6 +854,34 @@ app.use('/api', createLeadExportRouter({
   leadWorkspaceRepository,
   gistCustomerDataService
 }))
+
+app.get('/api/ai/config-status', (req, res) => {
+  const config = aiAnalysisService.getConfigurationStatus()
+  res.json({
+    success: true,
+    configured: config.configured,
+    missingEnvVars: config.missingEnvVars,
+    model: config.model,
+    provider: 'openai-compatible'
+  })
+})
+
+app.get('/api/research-runs', async (req, res) => {
+  try {
+    const runs = await researchRunService.list({
+      type: req.query.type || '',
+      limit: Number.parseInt(req.query.limit || '50', 10)
+    })
+    res.json({ success: true, runs })
+  } catch (error) {
+    console.error('Error reading research runs:', error)
+    return sendLeadServiceError(res, error, 'Failed to read research runs')
+  }
+})
+
+app.get('/api/provider-usage', (req, res) => {
+  res.json({ success: true, usage: apiBudgetService.getUsageSnapshot() })
+})
 
 app.put('/api/lead-workspaces/:id/company/:companyId', async (req, res) => {
   try {
@@ -857,15 +941,67 @@ app.post('/api/lead-workspaces/verify-google-maps', async (req, res) => {
       )
     }
 
-    if (!companyName) {
-      return res.status(400).json({ error: 'companyName is required' })
+    if (!companyName && !address) {
+      return res.status(400).json({ error: 'companyName or address is required' })
     }
 
-    const result = await addressVerificationService.verifyCompanyAddress({ companyName, address })
+    const result = companyName && address
+      ? await mapLookupService.verifyCompanyAddress({ companyName, address, maxResults: 10 })
+      : companyName
+        ? await mapLookupService.findCompanyLocations({ companyName, maxResults: 10 })
+        : await mapLookupService.lookupAddress({ address, maxResults: 10 })
     res.json(result)
   } catch (error) {
     console.error('Error verifying with Google Maps:', error)
     return sendLeadServiceError(res, error, 'Failed to verify with Google Maps')
+  }
+})
+
+app.post('/api/google-maps/company-locations', async (req, res) => {
+  try {
+    const { companyName, country = '', maxResults = 10 } = req.body || {}
+    if (!providerAvailability.googleMaps.available) {
+      return sendMissingEnvResponse(res, 'GOOGLE_MAPS_API_KEY is required for company location lookup.', providerAvailability.googleMaps.missingEnvVars)
+    }
+    if (!companyName) {
+      return res.status(400).json({ error: 'companyName is required' })
+    }
+    res.json(await mapLookupService.findCompanyLocations({ companyName, country, maxResults }))
+  } catch (error) {
+    console.error('Error finding company locations:', error)
+    return sendLeadServiceError(res, error, 'Failed to find company locations')
+  }
+})
+
+app.post('/api/google-maps/address-lookup', async (req, res) => {
+  try {
+    const { address, country = '', maxResults = 10 } = req.body || {}
+    if (!providerAvailability.googleMaps.available) {
+      return sendMissingEnvResponse(res, 'GOOGLE_MAPS_API_KEY is required for address lookup.', providerAvailability.googleMaps.missingEnvVars)
+    }
+    if (!address) {
+      return res.status(400).json({ error: 'address is required' })
+    }
+    res.json(await mapLookupService.lookupAddress({ address, country, maxResults }))
+  } catch (error) {
+    console.error('Error looking up address:', error)
+    return sendLeadServiceError(res, error, 'Failed to look up address')
+  }
+})
+
+app.post('/api/google-maps/verify-company-address', async (req, res) => {
+  try {
+    const { companyName, address, country = '', maxResults = 10 } = req.body || {}
+    if (!providerAvailability.googleMaps.available) {
+      return sendMissingEnvResponse(res, 'GOOGLE_MAPS_API_KEY is required for company address verification.', providerAvailability.googleMaps.missingEnvVars)
+    }
+    if (!companyName || !address) {
+      return res.status(400).json({ error: 'companyName and address are required' })
+    }
+    res.json(await mapLookupService.verifyCompanyAddress({ companyName, address, country, maxResults }))
+  } catch (error) {
+    console.error('Error verifying company address:', error)
+    return sendLeadServiceError(res, error, 'Failed to verify company address')
   }
 })
 

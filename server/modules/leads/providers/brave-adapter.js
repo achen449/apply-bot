@@ -1,12 +1,14 @@
 import { fetchJson } from '../../../infrastructure/http/fetch-json.js'
 import { buildProviderSearchResult, getQueryText } from './provider-result-normalizer.js'
 
-export function createBraveAdapter({ apiKey }) {
-  async function fetchWithToken(url) {
+export function createBraveAdapter({ apiKey, apiKeys = [] }) {
+  const keys = [...new Set([apiKey, ...apiKeys].filter(Boolean))]
+
+  async function fetchWithToken(url, token) {
     return fetchJson(url, {
       headers: {
         'Accept': 'application/json',
-        'X-Subscription-Token': apiKey
+        'X-Subscription-Token': token
       }
     })
   }
@@ -14,12 +16,13 @@ export function createBraveAdapter({ apiKey }) {
   return {
     async search(queryConfig) {
       const query = getQueryText(queryConfig)
-      if (!apiKey || !query) {
+      if (!keys.length || !query) {
         return []
       }
 
-      try {
-        const data = await fetchWithToken(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=8`)
+      for (const key of keys) {
+        try {
+        const data = await fetchWithToken(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=8`, key)
 
         const webResults = (data.web?.results || []).map((result) => buildProviderSearchResult('brave', queryConfig, {
           title: result.title || '',
@@ -43,8 +46,8 @@ export function createBraveAdapter({ apiKey }) {
 
         const idsQuery = locationIds.map((id) => `ids=${encodeURIComponent(id)}`).join('&')
         const [poisData, descriptionsData] = await Promise.all([
-          fetchWithToken(`https://api.search.brave.com/res/v1/local/pois?${idsQuery}`).catch(() => ({ results: [] })),
-          fetchWithToken(`https://api.search.brave.com/res/v1/local/descriptions?${idsQuery}`).catch(() => ({ results: [] }))
+          fetchWithToken(`https://api.search.brave.com/res/v1/local/pois?${idsQuery}`, key).catch(() => ({ results: [] })),
+          fetchWithToken(`https://api.search.brave.com/res/v1/local/descriptions?${idsQuery}`, key).catch(() => ({ results: [] }))
         ])
 
         const descriptionById = new Map((descriptionsData.results || []).map((result) => [result.id, result.description || '']))
@@ -83,10 +86,12 @@ export function createBraveAdapter({ apiKey }) {
         }).filter((result) => result.url && result.title)
 
         return [...webResults, ...localResults]
-      } catch (error) {
-        console.error('Brave search failed:', error.message)
-        return []
+        } catch (error) {
+          console.error('Brave search failed:', error.message)
+        }
       }
+
+      return []
     }
   }
 }

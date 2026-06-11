@@ -15,6 +15,58 @@ interface Prompt {
 
 const API_BASE_URL = '/api'
 
+const PROMPT_TEMPLATES = [
+  {
+    name: '公司 OSINT 公开信息背调提示词',
+    content: `你是一名公开信息尽职调查（Open-Source Due Diligence, OSINT）分析助手。
+
+任务：基于用户提供的公司名称、官网、国家、地址或其他线索，对目标公司进行结构化背调。
+
+规则：
+- 只使用公开可访问证据，不猜测、不编造。
+- 产品必须具体到产品类型，例如 string inverter、hybrid inverter、BESS container、battery rack、DC fast charger、PV junction box、combiner box、wire harness。
+- 联系方式只有在公开网页明确展示时才可输出，不得从姓名和域名推断邮箱。
+- 每个关键结论尽量附来源 URL 和证据强度：高 / 中 / 低。
+- 公开资料不足时写“未找到”或“公开资料不足”。
+
+输出结构：
+一、公司概览
+二、主营产品 / 服务
+三、总部 / 分支 / 工厂线索
+四、客户 / 合作伙伴 / 项目案例
+五、员工规模 / 融资 / 股权线索
+六、公开联系方式
+七、适合作为目标客户的原因
+八、风险提示与信息缺口
+九、结论`
+  },
+  {
+    name: 'Similar Company 目标客户推荐提示词',
+    content: `你是一名 B2B 外贸获客分析助手。
+
+任务：根据用户输入的标杆公司、产品、行业、目标国家，推荐相似公司或潜在采购客户。
+
+要求：
+- 推荐真实公司，不要推荐网页、目录、新闻、博客、展会页面。
+- 优先推荐制造商、系统集成商、OEM、项目开发商、运营商、硬件公司。
+- 说明为什么该公司可能需要用户产品。
+- 对于连接器业务，需要从应用场景推导客户，例如光伏逆变器、储能系统、BESS、PCS、EV 充电桩、工业自动化、线束、控制柜。
+
+返回 JSON：
+{
+  "recommendedCompanies": [
+    {
+      "name": "公司名",
+      "category": "客户类型",
+      "countryHint": "国家线索",
+      "reason": "为什么适合",
+      "expectedProducts": ["具体产品类型"]
+    }
+  ]
+}`
+  }
+]
+
 export default function Prompts() {
   const [prompts, setPrompts] = useState<Prompt[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -96,6 +148,11 @@ export default function Prompts() {
   const handleCreateNew = () => {
     setIsCreatingNew(true)
     setNewPrompt({ name: '', content: '' })
+  }
+
+  const handleUseTemplate = (template: { name: string; content: string }) => {
+    setIsCreatingNew(true)
+    setNewPrompt({ name: template.name, content: template.content })
   }
 
   const handleSaveNew = async () => {
@@ -224,13 +281,25 @@ export default function Prompts() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-3xl font-bold text-gray-900 dark:text-white">
-          Prompts
-        </h2>
-        <Button onClick={handleCreateNew} size="sm">
-          <Plus className="h-4 w-4 mr-1" />
-          New Prompt
-        </Button>
+        <div>
+          <h2 className="text-3xl font-bold text-gray-900 dark:text-white">
+            OSINT Prompt Library
+          </h2>
+          <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+            管理公司背调、Similar Company 推荐、产品/规模抽取等 AI 提示词模板。
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2 justify-end">
+          {PROMPT_TEMPLATES.map((template) => (
+            <Button key={template.name} onClick={() => handleUseTemplate(template)} variant="outline" size="sm">
+              Use {template.name.includes('Similar') ? 'Similar' : 'OSINT'} Template
+            </Button>
+          ))}
+          <Button onClick={handleCreateNew} size="sm">
+            <Plus className="h-4 w-4 mr-1" />
+            New Prompt
+          </Button>
+        </div>
       </div>
 
       {isLoading ? (
@@ -243,8 +312,8 @@ export default function Prompts() {
           {isCreatingNew && (
             <Card className="border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-900/20">
               <CardHeader>
-                <CardTitle>Create New Prompt</CardTitle>
-                <CardDescription>Enter the name and content for your new prompt</CardDescription>
+                <CardTitle>Create OSINT Prompt</CardTitle>
+                <CardDescription>保存可复用的背调、相似公司推荐、产品抽取提示词</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div>
@@ -289,7 +358,7 @@ export default function Prompts() {
           {prompts.length === 0 && !isCreatingNew ? (
             <Card>
               <CardContent className="py-12 text-center text-gray-500 dark:text-gray-400">
-                No prompts found. Create your first prompt to get started.
+                No prompts found. Use an OSINT template above or create your first due-diligence prompt.
               </CardContent>
             </Card>
           ) : (
