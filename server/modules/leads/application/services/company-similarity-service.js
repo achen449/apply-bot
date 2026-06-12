@@ -215,16 +215,20 @@ export function createCompanySimilarityService({ tavilyAdapter, braveAdapter, ai
   async function findSimilarCompanies(inputCompany, topN = 10) {
     const recommendations = await recommendCompanies(inputCompany, Math.max(topN, 20))
     const inputProfile = await extractCompanyProfile(inputCompany.name, inputCompany.website || '', inputCompany)
-    const enriched = []
+    
+    // Limit to prevent timeout: max 5 companies, parallel processing
+    const batchSize = Math.min(topN, 5)
+    const batch = recommendations.slice(0, batchSize)
+    
+    // Parallel enrichment instead of sequential
+    const enrichedResults = await Promise.all(
+      batch.map(recommendation => enrichRecommendation(inputProfile, recommendation, inputCompany))
+    )
+    
     const providerCalls = [...inputProfile.providerCalls]
+    enrichedResults.forEach(result => providerCalls.push(...result.providerCalls))
 
-    for (const recommendation of recommendations.slice(0, Math.max(topN, 12))) {
-      const result = await enrichRecommendation(inputProfile, recommendation, inputCompany)
-      providerCalls.push(...result.providerCalls)
-      enriched.push(result)
-    }
-
-    const sorted = enriched
+    const sorted = enrichedResults
       .sort((left, right) => right.buyerFitScore - left.buyerFitScore)
       .slice(0, topN)
     const run = await researchRunService?.saveCompletedRun?.({
