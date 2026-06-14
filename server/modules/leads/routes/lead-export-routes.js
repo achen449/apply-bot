@@ -1,7 +1,5 @@
 import express from 'express'
-import path from 'path'
 import { slugify } from '../shared/text-utils.js'
-import { createLeadWorkbookExportService } from '../application/services/lead-workbook-export-service.js'
 
 function csvEscape(value = '') {
   const stringValue = String(value ?? '')
@@ -42,6 +40,15 @@ function sendServiceError(res, error, fallbackMessage) {
     success: false,
     code: error?.code || 'request_failed',
     error: fallbackMessage
+  })
+}
+
+function sendLeadFeatureUnavailable(res, feature) {
+  return res.status(501).json({
+    success: false,
+    code: 'lead_feature_unavailable',
+    error: 'This lead workflow is temporarily unavailable while the AI refactor is rebuilt.',
+    feature
   })
 }
 
@@ -104,17 +111,11 @@ function toAttachmentFileName(value, extension) {
   return `${normalized}.${extension}`
 }
 
-function toCustomerExportBaseName(fileName = '') {
-  const parsed = path.parse(fileName)
-  return parsed.name ? `${parsed.name}-export` : 'customer-data-export'
-}
-
 export function createLeadExportRouter({
   leadWorkspaceRepository,
   gistCustomerDataService
 }) {
   const router = express.Router()
-  const workbookExportService = createLeadWorkbookExportService()
 
   router.get('/lead-workspaces/:id/export.csv', async (req, res) => {
     try {
@@ -134,34 +135,11 @@ export function createLeadExportRouter({
   })
 
   router.get('/lead-workspaces/:id/export.xlsx', async (req, res) => {
-    try {
-      const workspace = await leadWorkspaceRepository.getById(req.params.id)
-
-      if (!workspace) {
-        return res.status(404).json({ error: 'Workspace not found' })
-      }
-
-      const workbook = workbookExportService.buildWorkspaceWorkbook(workspace)
-      res.setHeader('Content-Type', workbookExportService.mimeType)
-      res.setHeader('Content-Disposition', `attachment; filename=${toAttachmentFileName(`${workspace.industry}-${workspace.country || 'global'}`, 'xlsx')}`)
-      return res.send(workbook)
-    } catch (error) {
-      console.error('Error exporting workspace XLSX:', error)
-      return res.status(500).json({ error: 'Failed to export workspace workbook' })
-    }
+    return sendLeadFeatureUnavailable(res, 'lead-workspace-xlsx-export')
   })
 
   router.get('/customer-data/export.xlsx', async (req, res) => {
-    try {
-      const result = await gistCustomerDataService.readCustomerData()
-      const workbook = workbookExportService.buildCustomerDataWorkbook(result.data)
-      res.setHeader('Content-Type', workbookExportService.mimeType)
-      res.setHeader('Content-Disposition', `attachment; filename=${toAttachmentFileName(toCustomerExportBaseName(result.fileName), 'xlsx')}`)
-      return res.send(workbook)
-    } catch (error) {
-      console.error('Error exporting customer data XLSX:', error)
-      return sendServiceError(res, error, 'Failed to export customer data workbook')
-    }
+    return sendLeadFeatureUnavailable(res, 'customer-data-xlsx-export')
   })
 
   return router
