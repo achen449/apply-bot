@@ -17,8 +17,10 @@ const GIST_SCHEMA = {
 };
 
 class GistService {
-  constructor(gistId, token) {
+  constructor(gistId, token, filename = 'apply-bot-data.json') {
     this.gistId = gistId;
+    this.token = token;
+    this.filename = filename || 'apply-bot-data.json';
     this.octokit = new Octokit({ auth: token });
     this.cache = null;
   }
@@ -33,7 +35,7 @@ class GistService {
         gist_id: this.gistId
       });
 
-      const filename = Object.keys(data.files)[0];
+      const filename = data.files[this.filename] ? this.filename : Object.keys(data.files)[0];
       const content = data.files[filename].content;
       this.cache = JSON.parse(content);
 
@@ -44,6 +46,53 @@ class GistService {
     }
   }
 
+  getConfigurationStatus() {
+    return {
+      configured: Boolean(this.gistId && this.token)
+    };
+  }
+
+  async readCustomerData() {
+    const configuration = this.getConfigurationStatus();
+
+    if (!configuration.configured) {
+      const error = new Error('GIST_ID and GITHUB_GIST_TOKEN are required for Gist storage.');
+      error.code = 'missing_env';
+      error.missingEnvVars = [
+        this.gistId ? '' : 'GIST_ID',
+        this.token ? '' : 'GITHUB_GIST_TOKEN'
+      ].filter(Boolean);
+      throw error;
+    }
+
+    const data = await this.fetchGist();
+
+    return {
+      storage: 'gist',
+      gistId: this.gistId,
+      fileName: this.filename,
+      exists: true,
+      updatedAt: null,
+      data
+    };
+  }
+
+  async updateCustomerData(patch) {
+    const current = await this.readCustomerData();
+    const nextData = {
+      ...current.data,
+      ...patch
+    };
+
+    await this.updateGist(nextData);
+
+    return {
+      ...current,
+      updatedAt: new Date().toISOString(),
+      data: nextData
+    };
+  }
+
   /**
    * Update the entire Gist with new data
    * @param {Object} data - Data to save
@@ -51,13 +100,12 @@ class GistService {
    */
   async updateGist(data) {
     try {
-      const filename = 'apply-bot-data.json';
       const content = JSON.stringify(data, null, 2);
 
       const { data: responseData } = await this.octokit.gists.update({
         gist_id: this.gistId,
         files: {
-          [filename]: {
+          [this.filename]: {
             content
           }
         }

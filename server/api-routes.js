@@ -1,5 +1,6 @@
 import express from 'express'
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { loadServerEnv } from './config/env.js'
@@ -7,25 +8,33 @@ import { createLeadWorkspaceRepository } from './modules/leads/repositories/lead
 import { dedupeStrings } from './modules/leads/shared/text-utils.js'
 import GistService from '../storage/gist-service.js'
 
-const gistService = new GistService(
-  process.env.GIST_ID,
-  process.env.GITHUB_GIST_TOKEN
-)
-
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const projectRoot = path.resolve(__dirname, '..')
+const isServerlessRuntime = Boolean(process.env.VERCEL || process.env.LAMBDA_TASK_ROOT || process.env.AWS_LAMBDA_FUNCTION_NAME)
+const writableRoot = isServerlessRuntime ? path.join(os.tmpdir(), 'apply-bot') : projectRoot
 
 const {
   TAVILY_API_KEY,
   BRAVE_API_KEY,
   GOOGLE_MAPS_API_KEY,
+  GIST_ID,
+  GITHUB_GIST_TOKEN,
+  GIST_CUSTOMER_DATA_FILENAME,
   AI_API_HOST,
   AI_API_KEY,
   AI_MODEL
 } = loadServerEnv(projectRoot)
 
-const leadWorkspaceRepository = createLeadWorkspaceRepository(projectRoot)
+const gistService = new GistService(
+  GIST_ID,
+  GITHUB_GIST_TOKEN,
+  GIST_CUSTOMER_DATA_FILENAME
+)
+
+const leadWorkspaceRepository = createLeadWorkspaceRepository(writableRoot, {
+  gistCustomerDataService: gistService
+})
 
 const leadFeatureUnavailable = {
   success: false,
@@ -117,7 +126,7 @@ function createWorkspaceSummary(companies, contacts, drafts) {
   }
 }
 
-const dataDir = path.join(projectRoot, 'data')
+const dataDir = path.join(writableRoot, 'data')
 const knowledgeJsonPath = path.join(dataDir, 'knowledge.json')
 const appliedJsonPath = path.join(dataDir, 'applied.json')
 const promptsJsonPath = path.join(dataDir, 'prompts.json')
