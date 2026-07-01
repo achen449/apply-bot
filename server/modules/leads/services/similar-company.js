@@ -152,7 +152,8 @@ export function createSimilarCompanyService({ aiAgent, tools = [], promptStorage
       const industry = normalizeText(payload.industry || payload.sampleCompany?.industry)
       const targetMarket = normalizeText(payload.targetMarket || payload.sampleCompany?.targetMarket)
       const country = normalizeText(payload.country || payload.sampleCompany?.country)
-      const maxResults = Number(payload.maxResults) > 0 ? Number(payload.maxResults) : 20
+      const requestedMaxResults = Number(payload.maxResults) > 0 ? Number(payload.maxResults) : 20
+      const maxResults = Math.min(requestedMaxResults, 8)
 
       const systemPrompt = await resolvePrompt({
         prompt,
@@ -184,7 +185,7 @@ export function createSimilarCompanyService({ aiAgent, tools = [], promptStorage
           maxResults
         }),
         tools,
-        maxIterations: 10,
+        maxIterations: 3,
         temperature: 0.2
       })
 

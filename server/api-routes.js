@@ -54,8 +54,8 @@ const aiAgent = (AI_API_HOST && AI_API_KEY && AI_MODEL)
       apiHost: AI_API_HOST,
       apiKey: AI_API_KEY,
       model: AI_MODEL,
-      timeoutMs: 60000,
-      maxTokens: 4000
+      timeoutMs: 15000,
+      maxTokens: 2200
     })
   : null
 
@@ -80,7 +80,8 @@ const googleMapsSearchService = createGoogleMapsSearchService({
 const aiTools = aiAgent ? createLeadAITools({
   tavilyAdapter,
   braveAdapter,
-  googleMapsAdapter
+  googleMapsAdapter,
+  timeoutMs: 8000
 }) : []
 
 const leadFinderService = aiAgent ? createLeadFinderService({
