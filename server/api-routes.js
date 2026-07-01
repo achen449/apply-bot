@@ -664,18 +664,6 @@ router.post('/monitored-companies', (req, res) => {
 
 // Lead workflows are handled by mounted modular routers below.
 
-const promptStorage = {
-  async read(type) {
-    return gistService.getPrompt(type)
-  },
-  async write(type, content) {
-    return gistService.savePrompt(type, content)
-  },
-  async delete(type) {
-    return gistService.deletePrompt(type)
-  }
-}
-
 const leadApiRouter = createLeadApiRouter({
   leadFinderService,
   similarCompanyService,
