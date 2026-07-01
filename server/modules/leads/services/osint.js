@@ -200,7 +200,13 @@ export function createOsintService({ aiAgent, tools = [], promptStorage, gistSto
         },
         mode,
         aiJson: readAiJson(aiResult),
-        aiResult
+        aiResult: {
+          ...aiResult,
+          prompt: {
+            key: 'osint',
+            rendered: systemPrompt
+          }
+        }
       })
 
       if (gistStorage && typeof gistStorage.saveResearchRun === 'function') {

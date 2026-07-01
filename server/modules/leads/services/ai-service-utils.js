@@ -138,6 +138,7 @@ export function buildAiMetadata(aiResult) {
     finalText: aiResult?.finalText || '',
     parsedJson: aiResult?.parsedJson || null,
     iterations: aiResult?.iterations || 0,
+    prompt: aiResult?.prompt || null,
     ...toolMetadata
   }
 }

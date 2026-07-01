@@ -70,7 +70,8 @@ export function createGoogleMapsAdapter({ apiKey }) {
             googlePlaceId: place.id || '',
             googleRating: rating,
             googleBusinessStatus: businessStatus,
-            googleTypes: place.types || []
+            googleTypes: place.types || [],
+            geo: place.location || null
           }
         }))
       }

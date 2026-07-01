@@ -63,6 +63,8 @@ export default function SimilarCompanyFinder() {
   const [results, setResults] = useState<SimilarCompanyResult[]>([])
   const [error, setError] = useState('')
   const [hasSearched, setHasSearched] = useState(false)
+  const [promptPreview, setPromptPreview] = useState('')
+  const [queryPreview, setQueryPreview] = useState<string[]>([])
 
   async function handleSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -74,6 +76,8 @@ export default function SimilarCompanyFinder() {
     try {
       const data = await findSimilarCompanies({ name, website, industry, description }, Number.parseInt(topN, 10))
       setResults(data.results)
+      setPromptPreview(data.metadata?.prompt?.rendered || '')
+      setQueryPreview((data.metadata?.searchCalls || []).map((call) => call.query || '').filter(Boolean))
     } catch (searchError) {
       console.error(searchError)
       const message = searchError instanceof Error ? searchError.message : '相似公司搜索失败'
@@ -142,6 +146,30 @@ export default function SimilarCompanyFinder() {
         </CardContent>
       </Card>
 
+      {promptPreview || queryPreview.length > 0 ? (
+        <Card className="border-gray-200 shadow-sm dark:border-stone-700">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-xl">
+              <Sparkles className="h-5 w-5 text-primary-600" />
+              Prompt / Query Preview
+            </CardTitle>
+            <CardDescription>用于本次相似公司推荐的 prompt 和 AI 生成查询词。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="rounded-2xl bg-stone-50 p-4 text-sm text-stone-700 dark:bg-stone-800 dark:text-stone-200 whitespace-pre-wrap">
+              {promptPreview || 'N/A'}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {queryPreview.length > 0 ? queryPreview.map((query) => (
+                <span key={query} className="rounded-full bg-sky-100 px-3 py-1 text-xs text-sky-800 dark:bg-sky-900/30 dark:text-sky-200">
+                  {query}
+                </span>
+              )) : <span className="text-sm text-gray-500 dark:text-gray-400">No generated queries yet.</span>}
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
       {hasSearched && !isSearching && !error && results.length === 0 ? (
         <Card className="border-gray-200 shadow-sm dark:border-stone-700">
           <CardContent className="p-6 text-sm text-gray-500 dark:text-gray-400">
@@ -184,6 +212,11 @@ export default function SimilarCompanyFinder() {
                               {result.company.queryLabel}
                             </span>
                           ) : null}
+                          {result.company.query ? (
+                            <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200">
+                              query: {result.company.query}
+                            </span>
+                          ) : null}
                         </div>
                         <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">{result.company.snippet || result.profile.rawProfile}</p>
                       </div>
@@ -199,7 +232,8 @@ export default function SimilarCompanyFinder() {
                           `Official Website Clue: ${profileWebsite || 'N/A'}`,
                           `Source URL: ${sourceUrl || 'N/A'}`,
                           `Source Provider: ${result.company.provider || 'tavily'}`,
-                          `Workflow Origin: similar-company-finder`
+                          `Workflow Origin: similar-company-finder`,
+                          `Captured At: ${formatCapturedAt(result.company.capturedAt)}`
                         ]}
                       />
                       <InfoBlock

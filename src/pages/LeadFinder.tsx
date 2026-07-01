@@ -38,6 +38,16 @@ interface LeadFinderResponse {
   metadata?: {
     totalProcessingTime?: number
     mode: Mode
+    prompt?: {
+      key?: string
+      rendered?: string
+    }
+    searchCalls?: Array<{
+      provider?: string
+      query?: string
+      ok?: boolean
+      resultCount?: number
+    }>
   }
 }
 
@@ -49,6 +59,8 @@ export default function LeadFinder() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [result, setResult] = useState<LeadFinderResponse | null>(null)
+  const [promptPreview, setPromptPreview] = useState('')
+  const [queryPreview, setQueryPreview] = useState<string[]>([])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -75,6 +87,8 @@ export default function LeadFinder() {
 
       const data: LeadFinderResponse = await response.json()
       setResult(data)
+      setPromptPreview(data.metadata?.prompt?.rendered || '')
+      setQueryPreview((data.metadata?.searchCalls || []).map((call) => call.query || '').filter(Boolean))
     } catch (submitError) {
       console.error(submitError)
       setError(submitError instanceof Error ? submitError.message : '生成线索失败。')
@@ -161,6 +175,27 @@ export default function LeadFinder() {
           </form>
         </CardContent>
       </Card>
+
+      {(promptPreview || queryPreview.length > 0) && (
+        <Card className="border-gray-200 dark:border-stone-700 shadow-sm">
+          <CardHeader>
+            <CardTitle className="text-xl">Prompt / Buyer Queries</CardTitle>
+            <CardDescription>本次 Lead Finder 实际使用的 prompt 和 AI 生成的 buyer-side 查询词。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="rounded-2xl bg-stone-50 p-4 text-sm text-stone-700 dark:bg-stone-800 dark:text-stone-200 whitespace-pre-wrap">
+              {promptPreview || 'N/A'}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {queryPreview.map((query) => (
+                <span key={query} className="rounded-full bg-sky-100 px-3 py-1 text-xs text-sky-800 dark:bg-sky-900/30 dark:text-sky-200">
+                  {query}
+                </span>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {result && (
         <>

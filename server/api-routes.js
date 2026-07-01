@@ -6,6 +6,23 @@ import { fileURLToPath } from 'url'
 import { loadServerEnv } from './config/env.js'
 import { createLeadWorkspaceRepository } from './modules/leads/repositories/lead-workspace-repository.js'
 import { dedupeStrings } from './modules/leads/shared/text-utils.js'
+import { createAIAgent } from './modules/leads/services/ai-agent.js'
+import { createLeadAITools } from './modules/leads/services/ai-tools.js'
+import { createLeadFinderService } from './modules/leads/services/lead-finder-service.js'
+import { createSimilarCompanyService } from './modules/leads/services/similar-company.js'
+import { createOsintService } from './modules/leads/services/osint.js'
+import { createTavilyAdapter } from './modules/leads/providers/tavily-adapter.js'
+import { createBraveAdapter } from './modules/leads/providers/brave-adapter.js'
+import { createGoogleMapsAdapter } from './modules/leads/providers/google-maps-adapter.js'
+import { createGoogleMapsSearchService } from './modules/leads/application/services/google-maps-search-service.js'
+import { createAddressClassificationService } from './modules/leads/application/services/address-classification-service.js'
+import { createLeadDiscoveryService } from './modules/leads/application/services/lead-discovery-service.js'
+import { createOsintResearchService } from './modules/leads/application/services/osint-research-service.js'
+import { createResearchRunsStorage } from './modules/leads/storage/research-runs-storage.js'
+import { createUsageStatsStorage } from './modules/leads/storage/usage-stats-storage.js'
+import { createLeadSupportRouter } from './modules/leads/routes/lead-support-routes.js'
+import { createLeadExportRouter } from './modules/leads/routes/lead-export-routes.js'
+import { createApiRouter as createLeadApiRouter } from './modules/leads/routes/api-routes.js'
 import GistService from '../storage/gist-service.js'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -31,6 +48,113 @@ const gistService = new GistService(
   GITHUB_GIST_TOKEN,
   GIST_CUSTOMER_DATA_FILENAME
 )
+
+const aiAgent = (AI_API_HOST && AI_API_KEY && AI_MODEL)
+  ? createAIAgent({
+      apiHost: AI_API_HOST,
+      apiKey: AI_API_KEY,
+      model: AI_MODEL,
+      timeoutMs: 60000,
+      maxTokens: 4000
+    })
+  : null
+
+const tavilyAdapter = createTavilyAdapter({
+  apiKey: TAVILY_API_KEY,
+  apiKeys: []
+})
+
+const braveAdapter = createBraveAdapter({
+  apiKey: BRAVE_API_KEY,
+  apiKeys: []
+})
+
+const googleMapsAdapter = createGoogleMapsAdapter({
+  apiKey: GOOGLE_MAPS_API_KEY
+})
+
+const googleMapsSearchService = createGoogleMapsSearchService({
+  googleMapsAdapter
+})
+
+const aiTools = aiAgent ? createLeadAITools({
+  tavilyAdapter,
+  braveAdapter,
+  googleMapsAdapter
+}) : []
+
+const leadFinderService = aiAgent ? createLeadFinderService({
+  aiAgent,
+  tools: aiTools,
+  promptStorage: gistService
+}) : null
+
+const similarCompanyService = aiAgent ? createSimilarCompanyService({
+  aiAgent,
+  tools: aiTools,
+  promptStorage: gistService
+}) : null
+
+const osintService = aiAgent ? createOsintService({
+  aiAgent,
+  tools: aiTools,
+  promptStorage: gistService,
+  gistStorage: gistService
+}) : null
+
+const addressClassificationService = createAddressClassificationService({
+  googleMapsSearchService
+})
+
+const researchRunsStorage = createResearchRunsStorage({ gistService })
+const usageStatsStorage = createUsageStatsStorage({ gistService })
+
+const promptStorage = {
+  async read(type) {
+    return gistService.getPrompt(type)
+  },
+  async write(type, content) {
+    return gistService.savePrompt(type, content)
+  },
+  async delete(type) {
+    return gistService.deletePrompt(type)
+  }
+}
+
+const researchRunsStorageAdapter = {
+  async list({ limit = 100, offset = 0 } = {}) {
+    const result = await gistService.readCustomerData()
+    const runs = Array.isArray(result.data?.researchRuns) ? result.data.researchRuns : []
+    return runs.slice(offset, offset + limit)
+  },
+  async save(run) {
+    await gistService.saveResearchRun(run)
+  }
+}
+
+const usageStatsStorageAdapter = {
+  async get(period = 'day') {
+    const result = await gistService.readCustomerData()
+    const runs = Array.isArray(result.data?.researchRuns) ? result.data.researchRuns : []
+    const byWorkflow = {}
+    const providers = {}
+
+    for (const run of runs) {
+      const workflow = run.workflow || 'unknown'
+      byWorkflow[workflow] = (byWorkflow[workflow] || 0) + 1
+      for (const call of run.searchCalls || []) {
+        const provider = call.provider || 'unknown'
+        providers[provider] = (providers[provider] || 0) + 1
+      }
+      for (const call of run.verificationCalls || []) {
+        const provider = call.provider || 'unknown'
+        providers[provider] = (providers[provider] || 0) + 1
+      }
+    }
+
+    return { period, totalRuns: runs.length, byWorkflow, providers }
+  }
+}
 
 const leadWorkspaceRepository = createLeadWorkspaceRepository(writableRoot, {
   gistCustomerDataService: gistService
@@ -538,244 +662,48 @@ router.post('/monitored-companies', (req, res) => {
   }
 })
 
-// Lead Workspaces API
-router.get('/lead-workspaces', async (req, res) => {
-  try {
-    const workspaces = await leadWorkspaceRepository.list()
-    res.json({ workspaces })
-  } catch (error) {
-    console.error('Error reading lead workspaces:', error)
-    res.status(500).json({ error: 'Failed to read lead workspaces' })
+// Lead workflows are handled by mounted modular routers below.
+
+const promptStorage = {
+  async read(type) {
+    return gistService.getPrompt(type)
+  },
+  async write(type, content) {
+    return gistService.savePrompt(type, content)
+  },
+  async delete(type) {
+    return gistService.deletePrompt(type)
   }
+}
+
+const leadApiRouter = createLeadApiRouter({
+  leadFinderService,
+  similarCompanyService,
+  osintService,
+  promptStorage,
+  researchRunsStorage: researchRunsStorageAdapter,
+  usageStatsStorage: usageStatsStorageAdapter,
+  providerAvailability
 })
 
-router.post('/lead-workspaces/discover', async (req, res) => {
-  try {
-    const { industry } = req.body
-
-    if (!industry || typeof industry !== 'string') {
-      return res.status(400).json({ error: 'Industry is required' })
+const leadSupportRouter = createLeadSupportRouter({
+  addressClassificationService,
+  companySimilarityService: similarCompanyService || {
+    async findSimilarCompanies(company) {
+      return { companies: [], sampleCompany: company, metadata: {} }
     }
-
-    return sendLeadFeatureUnavailable(res, 'lead-workspace-discovery')
-  } catch (error) {
-    console.error('Error creating lead workspace:', error)
-    return sendLeadServiceError(res, error, 'Failed to create lead workspace')
-  }
+  },
+  gistCustomerDataService: gistService,
+  providerAvailability
 })
 
-router.get('/lead-workspaces/:id', async (req, res) => {
-  try {
-    const workspace = await leadWorkspaceRepository.getById(req.params.id)
-
-    if (!workspace) {
-      return res.status(404).json({ error: 'Workspace not found' })
-    }
-
-    res.json({ workspace })
-  } catch (error) {
-    console.error('Error reading lead workspace:', error)
-    res.status(500).json({ error: 'Failed to read lead workspace' })
-  }
+const leadExportRouter = createLeadExportRouter({
+  leadWorkspaceRepository,
+  gistCustomerDataService: gistService
 })
 
-router.put('/lead-workspaces/:id/company/:companyId', async (req, res) => {
-  try {
-    const updateResult = await leadWorkspaceRepository.updateCompany(req.params.id, req.params.companyId, (company, workspace) => {
-      const nextCompany = {
-        ...company,
-        ...req.body
-      }
-
-      const nextCompanies = workspace.companies.map((item) => item.id === company.id ? nextCompany : item)
-      workspace.summary = createWorkspaceSummary(nextCompanies, workspace.contacts || [], workspace.drafts || [])
-
-      return nextCompany
-    })
-
-    if (!updateResult) {
-      return res.status(404).json({ error: 'Workspace not found' })
-    }
-
-    if (!updateResult.company) {
-      return res.status(404).json({ error: 'Company not found' })
-    }
-
-    res.json({ company: updateResult.company })
-  } catch (error) {
-    console.error('Error updating company:', error)
-    res.status(500).json({ error: 'Failed to update company' })
-  }
-})
-
-// Google Maps API
-router.post('/lead-workspaces/verify-google-maps', async (req, res) => {
-  try {
-    const { companyName, address } = req.body
-
-    if (!providerAvailability.googleMaps.available) {
-      return sendMissingEnvResponse(
-        res,
-        'GOOGLE_MAPS_API_KEY is required for Google Maps verification.',
-        providerAvailability.googleMaps.missingEnvVars
-      )
-    }
-
-    if (!companyName && !address) {
-      return res.status(400).json({ error: 'companyName or address is required' })
-    }
-
-    return sendLeadFeatureUnavailable(res, 'google-maps-verification')
-  } catch (error) {
-    console.error('Error verifying with Google Maps:', error)
-    return sendLeadServiceError(res, error, 'Failed to verify with Google Maps')
-  }
-})
-
-router.post('/google-maps/company-locations', async (req, res) => {
-  try {
-    const { companyName, country = '', maxResults = 10 } = req.body || {}
-    if (!providerAvailability.googleMaps.available) {
-      return sendMissingEnvResponse(res, 'GOOGLE_MAPS_API_KEY is required for company location lookup.', providerAvailability.googleMaps.missingEnvVars)
-    }
-    if (!companyName) {
-      return res.status(400).json({ error: 'companyName is required' })
-    }
-    return sendLeadFeatureUnavailable(res, 'google-maps-company-locations')
-  } catch (error) {
-    console.error('Error finding company locations:', error)
-    return sendLeadServiceError(res, error, 'Failed to find company locations')
-  }
-})
-
-router.post('/google-maps/address-lookup', async (req, res) => {
-  try {
-    const { address, country = '', maxResults = 10 } = req.body || {}
-    if (!providerAvailability.googleMaps.available) {
-      return sendMissingEnvResponse(res, 'GOOGLE_MAPS_API_KEY is required for address lookup.', providerAvailability.googleMaps.missingEnvVars)
-    }
-    if (!address) {
-      return res.status(400).json({ error: 'address is required' })
-    }
-    return sendLeadFeatureUnavailable(res, 'google-maps-address-lookup')
-  } catch (error) {
-    console.error('Error looking up address:', error)
-    return sendLeadServiceError(res, error, 'Failed to look up address')
-  }
-})
-
-router.post('/google-maps/verify-company-address', async (req, res) => {
-  try {
-    const { companyName, address, country = '', maxResults = 10 } = req.body || {}
-    if (!providerAvailability.googleMaps.available) {
-      return sendMissingEnvResponse(res, 'GOOGLE_MAPS_API_KEY is required for company address verification.', providerAvailability.googleMaps.missingEnvVars)
-    }
-    if (!companyName || !address) {
-      return res.status(400).json({ error: 'companyName and address are required' })
-    }
-    return sendLeadFeatureUnavailable(res, 'google-maps-company-address-verification')
-  } catch (error) {
-    console.error('Error verifying company address:', error)
-    return sendLeadServiceError(res, error, 'Failed to verify company address')
-  }
-})
-
-router.post('/google-maps/search', async (req, res) => {
-  try {
-    const { query, location, filters = {} } = req.body
-
-    if (!providerAvailability.googleMaps.available) {
-      return sendMissingEnvResponse(
-        res,
-        'GOOGLE_MAPS_API_KEY is required for Google Maps search.',
-        providerAvailability.googleMaps.missingEnvVars
-      )
-    }
-
-    if (!query) {
-      return res.status(400).json({ error: 'query is required' })
-    }
-
-    return sendLeadFeatureUnavailable(res, 'google-maps-search')
-  } catch (error) {
-    console.error('Error searching Google Maps:', error)
-    return sendLeadServiceError(res, error, 'Failed to search Google Maps')
-  }
-})
-
-router.post('/lead-workspaces/batch-verify-csv', async (req, res) => {
-  try {
-    const { companies } = req.body
-
-    if (!providerAvailability.googleMaps.available) {
-      return sendMissingEnvResponse(
-        res,
-        'GOOGLE_MAPS_API_KEY is required for batch Google Maps verification.',
-        providerAvailability.googleMaps.missingEnvVars
-      )
-    }
-
-    if (!Array.isArray(companies) || companies.length === 0) {
-      return res.status(400).json({ error: 'companies array is required and must not be empty' })
-    }
-
-    return sendLeadFeatureUnavailable(res, 'batch-google-maps-verification')
-  } catch (error) {
-    console.error('Error batch verifying with Google Maps:', error)
-    return sendLeadServiceError(res, error, 'Failed to batch verify with Google Maps')
-  }
-})
-
-// AI Config Status
-router.get('/ai/config-status', (req, res) => {
-  res.json({
-    success: true,
-    configured: providerAvailability.ai.available,
-    missingEnvVars: providerAvailability.ai.missingEnvVars,
-    model: AI_MODEL || '',
-    provider: 'openai-compatible'
-  })
-})
-
-// Disabled features (return 501)
-router.post('/lead-workspaces/osint-research', (req, res) => {
-  return sendLeadFeatureUnavailable(res, 'osint-research')
-})
-
-router.post('/addresses/batch-classify', (req, res) => {
-  return sendLeadFeatureUnavailable(res, 'address-classification')
-})
-
-router.post('/companies/find-similar', (req, res) => {
-  return sendLeadFeatureUnavailable(res, 'similar-company-search')
-})
-
-router.get('/customer-data', (req, res) => {
-  return sendLeadFeatureUnavailable(res, 'customer-data-gist-sync')
-})
-
-router.put('/customer-data', (req, res) => {
-  return sendLeadFeatureUnavailable(res, 'customer-data-gist-sync')
-})
-
-router.get('/lead-workspaces/:id/export.csv', (req, res) => {
-  return sendLeadFeatureUnavailable(res, 'lead-workspace-export')
-})
-
-router.get('/lead-workspaces/:id/export.xlsx', (req, res) => {
-  return sendLeadFeatureUnavailable(res, 'lead-workspace-export')
-})
-
-router.get('/customer-data/export.xlsx', (req, res) => {
-  return sendLeadFeatureUnavailable(res, 'customer-data-export')
-})
-
-router.get('/research-runs', (req, res) => {
-  return sendLeadFeatureUnavailable(res, 'research-runs')
-})
-
-router.get('/provider-usage', (req, res) => {
-  return sendLeadFeatureUnavailable(res, 'provider-usage')
-})
+router.use('/', leadApiRouter)
+router.use('/', leadSupportRouter)
+router.use('/', leadExportRouter)
 
 export default router

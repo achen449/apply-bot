@@ -143,7 +143,13 @@ export function createLeadFinderService({ aiAgent, tools = [], promptStorage, pr
         payload: { ...payload, industry, keywords },
         mode,
         aiJson: readAiJson(aiResult),
-        aiResult
+        aiResult: {
+          ...aiResult,
+          prompt: {
+            key: 'lead-finder',
+            rendered: systemPrompt
+          }
+        }
       })
     }
   }

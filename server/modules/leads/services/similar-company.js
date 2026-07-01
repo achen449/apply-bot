@@ -45,8 +45,9 @@ const SIMILAR_COMPANY_PROMPT = `你是一位经验丰富的B2B市场研究专家
 
 5. **输出结果**
    - 按相似度评分从高到低排序
-   - 只返回评分60分以上的高质量结果
+   - 优先返回最多 {{maxResults}} 家高质量结果；若公开证据不足，可少于该数量，但不能为了凑数编造
    - 提供清晰的相似理由说明
+   - 对 shortlist 公司优先调用 verify_company，尽量加入地图验证信号
 
 ## 注意事项
 
@@ -139,7 +140,7 @@ export function createSimilarCompanyService({ aiAgent, tools = [], promptStorage
 
   return {
     async findSimilarCompanies(payload = {}) {
-      const companyName = normalizeText(payload.companyName || payload.sampleCompany?.name)
+      const companyName = normalizeText(payload.companyName || payload.name || payload.sampleCompany?.name)
       if (!companyName) {
         const error = new Error('companyName is required')
         error.code = 'invalid_payload'
@@ -151,7 +152,7 @@ export function createSimilarCompanyService({ aiAgent, tools = [], promptStorage
       const industry = normalizeText(payload.industry || payload.sampleCompany?.industry)
       const targetMarket = normalizeText(payload.targetMarket || payload.sampleCompany?.targetMarket)
       const country = normalizeText(payload.country || payload.sampleCompany?.country)
-      const maxResults = Number(payload.maxResults) > 0 ? Number(payload.maxResults) : 10
+      const maxResults = Number(payload.maxResults) > 0 ? Number(payload.maxResults) : 20
 
       const systemPrompt = await resolvePrompt({
         prompt,
@@ -197,7 +198,13 @@ export function createSimilarCompanyService({ aiAgent, tools = [], promptStorage
           country
         },
         aiJson: readAiJson(aiResult),
-        aiResult
+        aiResult: {
+          ...aiResult,
+          prompt: {
+            key: 'similar-company',
+            rendered: systemPrompt
+          }
+        }
       })
     }
   }

@@ -16,6 +16,35 @@ const GIST_SCHEMA = {
   mapVerificationCache: {}
 };
 
+const CUSTOMER_DATA_SCHEMA = {
+  customers: [],
+  leads: [],
+  leadWorkspaces: [],
+  countries: [],
+  keywords: [],
+  searchKeywords: [],
+  companies: [],
+  websites: [],
+  evidence: [],
+  providerMetadata: {}
+};
+
+function normalizeGistData(data = {}) {
+  return {
+    ...CUSTOMER_DATA_SCHEMA,
+    ...GIST_SCHEMA,
+    ...(data || {}),
+    researchRuns: Array.isArray(data?.researchRuns) ? data.researchRuns : [],
+    prompts: {
+      ...GIST_SCHEMA.prompts,
+      ...(data?.prompts || {})
+    },
+    searchCache: data?.searchCache && typeof data.searchCache === 'object' && !Array.isArray(data.searchCache) ? data.searchCache : {},
+    mapVerificationCache: data?.mapVerificationCache && typeof data.mapVerificationCache === 'object' && !Array.isArray(data.mapVerificationCache) ? data.mapVerificationCache : {},
+    providerMetadata: data?.providerMetadata && typeof data.providerMetadata === 'object' && !Array.isArray(data.providerMetadata) ? data.providerMetadata : {}
+  };
+}
+
 class GistService {
   constructor(gistId, token, filename = 'apply-bot-data.json') {
     this.gistId = gistId;
@@ -37,7 +66,7 @@ class GistService {
 
       const filename = data.files[this.filename] ? this.filename : Object.keys(data.files)[0];
       const content = data.files[filename].content;
-      this.cache = JSON.parse(content);
+      this.cache = normalizeGistData(JSON.parse(content));
 
       return this.cache;
     } catch (error) {
@@ -48,7 +77,12 @@ class GistService {
 
   getConfigurationStatus() {
     return {
-      configured: Boolean(this.gistId && this.token)
+      configured: Boolean(this.gistId && this.token),
+      missingEnvVars: [
+        this.gistId ? '' : 'GIST_ID',
+        this.token ? '' : 'GITHUB_GIST_TOKEN'
+      ].filter(Boolean),
+      fileName: this.filename
     };
   }
 
@@ -100,7 +134,7 @@ class GistService {
    */
   async updateGist(data) {
     try {
-      const content = JSON.stringify(data, null, 2);
+      const content = JSON.stringify(normalizeGistData(data), null, 2);
 
       const { data: responseData } = await this.octokit.gists.update({
         gist_id: this.gistId,
@@ -111,7 +145,7 @@ class GistService {
         }
       });
 
-      this.cache = data;
+      this.cache = normalizeGistData(data);
       return responseData;
     } catch (error) {
       console.error('Error updating Gist:', error.message);
@@ -251,7 +285,7 @@ class GistService {
    * @returns {Promise<Object>} Initialized Gist data
    */
   async initialize() {
-    const initialData = JSON.parse(JSON.stringify(GIST_SCHEMA));
+    const initialData = normalizeGistData({});
     await this.updateGist(initialData);
     return initialData;
   }

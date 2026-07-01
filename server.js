@@ -4,6 +4,7 @@ import path from 'path'
 import net from 'net'
 import { fileURLToPath } from 'url'
 import apiRoutes from './server/api-routes.js'
+import { createLeadOsintRouter } from './server/modules/leads/routes/osint-routes.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -19,6 +20,11 @@ app.use(express.json())
 
 // API routes
 app.use('/api', apiRoutes)
+const osintResearchService = { async research() { return { status: 'needs_review', unresolvedQuestions: [] } } }
+app.post('/api/lead-workspaces/discover', (_req, _res, next) => next())
+app.use('/api/lead-workspaces', createLeadOsintRouter({ osintResearchService }))
+app.get('/api/lead-workspaces/:id', (_req, _res, next) => next())
+app.put('/api/lead-workspaces/:id/company/:companyId', (_req, _res, next) => next())
 
 // Static files
 app.use(express.static(path.join(__dirname, 'dist')))

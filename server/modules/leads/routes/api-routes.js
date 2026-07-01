@@ -49,6 +49,16 @@ export function createApiRouter({
 }) {
   const router = express.Router()
 
+  async function persistRun(run) {
+    if (researchRunsStorage && typeof researchRunsStorage.save === 'function') {
+      try {
+        await researchRunsStorage.save(run)
+      } catch (error) {
+        console.error('Failed to persist research run:', error)
+      }
+    }
+  }
+
   // POST /api/lead-finder
   router.post('/lead-finder', async (req, res) => {
     try {
@@ -71,14 +81,35 @@ export function createApiRouter({
         mode
       })
 
-      return res.json({
+      const payload = {
         success: true,
         workspace: result.workspace,
         results: result.results,
         candidatePool: result.candidatePool,
         shortlist: result.shortlist,
         metadata: result.metadata
+      }
+
+      await persistRun({
+        id: `lead-finder-${result.workspace?.id || Date.now()}`,
+        workflow: 'lead-finder',
+        title: `Lead Finder: ${industry}`,
+        createdAt: new Date().toISOString(),
+        prompt: result.metadata?.prompt || null,
+        searchCalls: result.metadata?.searchCalls || [],
+        verificationCalls: result.metadata?.verificationCalls || [],
+        workspace: result.workspace,
+        queryInput: {
+          industry,
+          country: country || '',
+          keywords: Array.isArray(keywords) ? keywords : [],
+          targetTypes: Array.isArray(targetTypes) ? targetTypes : [],
+          excludeTypes: Array.isArray(excludeTypes) ? excludeTypes : [],
+          mode: mode || 'standard'
+        }
       })
+
+      return res.json(payload)
     } catch (error) {
       console.error('Error in lead-finder:', error)
       return sendServiceError(res, error, 'Failed to discover leads')
@@ -111,12 +142,25 @@ export function createApiRouter({
         toPositiveInteger(topN, 10)
       )
 
+      await persistRun({
+        id: `similar-company-${Date.now()}`,
+        workflow: 'similar-company',
+        title: `Similar Company: ${company.name}`,
+        createdAt: new Date().toISOString(),
+        prompt: result.metadata?.prompt || null,
+        searchCalls: result.metadata?.searchCalls || [],
+        verificationCalls: result.metadata?.verificationCalls || [],
+        sampleCompany: result.sampleCompany,
+        results: result.companies || []
+      })
+
       return res.json({
         success: true,
         configured: true,
         runId: result.runId || null,
-        recommendations: result.recommendations || [],
-        results: result.results || []
+        recommendations: result.companies || [],
+        results: result.companies || [],
+        metadata: result.metadata || {}
       })
     } catch (error) {
       console.error('Error in similar-company:', error)
@@ -141,9 +185,7 @@ export function createApiRouter({
 
       return res.json({
         success: true,
-        runId: result.runId || null,
-        company: result.company || {},
-        intelligence: result.intelligence || {},
+        research: result.researchRun || null,
         metadata: result.metadata || {}
       })
     } catch (error) {
@@ -167,7 +209,7 @@ export function createApiRouter({
 
       const prompt = await promptStorage.read(type)
 
-      if (!prompt) {
+      if (prompt == null) {
         return res.status(404).json({
           success: false,
           code: 'not_found',
@@ -190,7 +232,8 @@ export function createApiRouter({
   router.put('/prompts/:type', async (req, res) => {
     try {
       const { type } = req.params
-      const { prompt } = req.body || {}
+      const { prompt, content } = req.body || {}
+      const nextPrompt = hasText(prompt) ? prompt : content
 
       if (!hasText(type)) {
         return res.status(400).json({
@@ -200,7 +243,7 @@ export function createApiRouter({
         })
       }
 
-      if (!hasText(prompt)) {
+      if (!hasText(nextPrompt)) {
         return res.status(400).json({
           success: false,
           code: 'invalid_payload',
@@ -208,16 +251,40 @@ export function createApiRouter({
         })
       }
 
-      await promptStorage.write(type, prompt)
+      await promptStorage.write(type, nextPrompt)
 
       return res.json({
         success: true,
         type,
-        prompt
+        prompt: nextPrompt
       })
     } catch (error) {
       console.error('Error updating prompt:', error)
       return sendServiceError(res, error, 'Failed to update prompt')
+    }
+  })
+
+  router.delete('/prompts/:type', async (req, res) => {
+    try {
+      const { type } = req.params
+
+      if (!hasText(type)) {
+        return res.status(400).json({
+          success: false,
+          code: 'invalid_payload',
+          error: 'type parameter is required'
+        })
+      }
+
+      await promptStorage.delete(type)
+
+      return res.json({
+        success: true,
+        type
+      })
+    } catch (error) {
+      console.error('Error deleting prompt:', error)
+      return sendServiceError(res, error, 'Failed to delete prompt')
     }
   })
 

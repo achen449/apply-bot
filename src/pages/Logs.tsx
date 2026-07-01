@@ -1,267 +1,154 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useState } from 'react'
+import { ChevronDown, ChevronRight, Clock, FileText, Sparkles } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
-import { Trash2, ChevronDown, ChevronRight, FileText, Clock, CheckCircle, AlertCircle, Info } from 'lucide-react'
+import { fetchResearchRuns, type ResearchRunRecord } from '@/lib/leadApi'
 
-interface LogEntry {
-  timestamp: string
-  action: string
-  reason: string
-  result?: string
-  type?: 'info' | 'success' | 'warning' | 'error'
-}
-
-interface LogSession {
-  id: string
-  name: string
-  createdAt: string
-  updatedAt?: string
-  entries: LogEntry[]
-  summary?: {
-    totalApplications: number
-    successful: number
-    needsReview: number
-    skipped: number
+function formatDate(value?: string) {
+  if (!value) {
+    return 'N/A'
   }
+
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  })
 }
 
-const API_BASE_URL = '/api'
+function InfoBlock({ title, lines }: { title: string; lines: string[] }) {
+  return (
+    <div className="rounded-2xl bg-stone-50 p-4 text-sm text-stone-700 dark:bg-stone-800 dark:text-stone-200">
+      <div className="font-semibold">{title}</div>
+      <div className="mt-2 space-y-1">
+        {lines.map((line) => (
+          <div key={line}>{line}</div>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 export default function Logs() {
-  const [sessions, setSessions] = useState<LogSession[]>([])
+  const [runs, setRuns] = useState<ResearchRunRecord[]>([])
+  const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set())
   const [isLoading, setIsLoading] = useState(true)
-  const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set())
 
   useEffect(() => {
-    fetchLogs()
+    fetchResearchRuns()
+      .then(setRuns)
+      .catch((error) => {
+        console.error('Failed to load research runs:', error)
+        setRuns([])
+      })
+      .finally(() => setIsLoading(false))
   }, [])
 
-  const fetchLogs = async () => {
-    try {
-      setIsLoading(true)
-      const response = await fetch(`${API_BASE_URL}/logs`)
-      const data = await response.json()
-      setSessions(data.sessions || [])
-    } catch (error) {
-      console.error('Failed to load logs:', error)
-      setSessions([])
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  const handleDeleteSession = async (sessionId: string) => {
-    if (!confirm('Are you sure you want to delete this log session?')) {
-      return
-    }
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/logs/${sessionId}`, {
-        method: 'DELETE',
-      })
-
-      if (response.ok) {
-        setSessions(sessions.filter(s => s.id !== sessionId))
-      } else {
-        throw new Error('Failed to delete session')
-      }
-    } catch (error) {
-      console.error('Failed to delete session:', error)
-      alert('Failed to delete session. Please try again.')
-    }
-  }
-
-  const toggleSession = (sessionId: string) => {
-    const newExpanded = new Set(expandedSessions)
-    if (newExpanded.has(sessionId)) {
-      newExpanded.delete(sessionId)
-    } else {
-      newExpanded.add(sessionId)
-    }
-    setExpandedSessions(newExpanded)
-  }
-
-  const formatDate = (dateString: string) => {
-    try {
-      const date = new Date(dateString)
-      return date.toLocaleString('en-US', {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      })
-    } catch {
-      return dateString
-    }
-  }
-
-  const formatTime = (dateString: string) => {
-    try {
-      const date = new Date(dateString)
-      return date.toLocaleTimeString('en-US', {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-      })
-    } catch {
-      return dateString
-    }
-  }
-
-  const getEntryIcon = (type?: string) => {
-    switch (type) {
-      case 'success':
-        return <CheckCircle className="h-4 w-4 text-green-500" />
-      case 'warning':
-        return <AlertCircle className="h-4 w-4 text-yellow-500" />
-      case 'error':
-        return <AlertCircle className="h-4 w-4 text-red-500" />
-      default:
-        return <Info className="h-4 w-4 text-blue-500" />
-    }
-  }
-
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
+    <div className="space-y-6">
+      <div className="flex items-center justify-between gap-4">
         <div>
-          <h2 className="text-3xl font-bold text-gray-900 dark:text-white">
-            Application Logs
-          </h2>
-          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            View detailed logs of AI actions during job applications
+          <h2 className="text-3xl font-bold text-gray-900 dark:text-white">Research Runs</h2>
+          <p className="mt-2 max-w-4xl text-sm text-gray-600 dark:text-gray-400">
+            这里记录 Lead Finder、Similar Company、OSINT 等流程的 prompt、AI 查询词和结果留痕。
           </p>
         </div>
         <div className="text-sm text-gray-500 dark:text-gray-400">
-          {isLoading ? 'Loading...' : `${sessions.length} session${sessions.length !== 1 ? 's' : ''}`}
+          {isLoading ? 'Loading...' : `${runs.length} run${runs.length !== 1 ? 's' : ''}`}
         </div>
       </div>
 
       {isLoading ? (
         <Card className="border-gray-200 dark:border-stone-700 shadow-sm">
-          <CardContent className="p-12 text-center">
-            <div className="text-gray-500 dark:text-gray-400">Loading...</div>
-          </CardContent>
+          <CardContent className="p-12 text-center text-gray-500 dark:text-gray-400">Loading...</CardContent>
         </Card>
-      ) : sessions.length === 0 ? (
+      ) : runs.length === 0 ? (
         <Card className="border-gray-200 dark:border-stone-700 shadow-sm">
-          <CardContent className="p-12 text-center">
-            <div className="text-gray-500 dark:text-gray-400">
-              <FileText className="h-12 w-12 mx-auto mb-4 opacity-50" />
-              <p className="text-lg mb-2">No logs yet</p>
-              <p className="text-sm">Logs will appear here after AI completes job applications</p>
-            </div>
+          <CardContent className="p-12 text-center text-gray-500 dark:text-gray-400">
+            <FileText className="mx-auto mb-4 h-12 w-12 opacity-50" />
+            <p className="text-lg mb-2">No research runs yet</p>
+            <p className="text-sm">Runs will appear here after AI workflows complete.</p>
           </CardContent>
         </Card>
       ) : (
         <div className="space-y-4">
-          {sessions.map((session) => {
-            const isExpanded = expandedSessions.has(session.id)
+          {runs.map((run) => {
+            const isExpanded = expandedRuns.has(run.id)
+            const promptPreview = run.prompt?.rendered?.slice(0, 220) || 'N/A'
+            const searchQueries = (run.searchCalls || []).map((call) => call.query).filter(Boolean)
 
             return (
-              <Card key={session.id} className="border-gray-200 dark:border-stone-700 shadow-sm">
+              <Card key={run.id} className="border-gray-200 dark:border-stone-700 shadow-sm">
                 <CardHeader
                   className="cursor-pointer hover:bg-gray-50 dark:hover:bg-stone-800/50 transition-colors"
-                  onClick={() => toggleSession(session.id)}
+                  onClick={() => {
+                    const next = new Set(expandedRuns)
+                    if (next.has(run.id)) next.delete(run.id)
+                    else next.add(run.id)
+                    setExpandedRuns(next)
+                  }}
                 >
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-4">
                     <div className="flex items-center gap-3">
-                      {isExpanded ? (
-                        <ChevronDown className="h-5 w-5 text-gray-400" />
-                      ) : (
-                        <ChevronRight className="h-5 w-5 text-gray-400" />
-                      )}
+                      {isExpanded ? <ChevronDown className="h-5 w-5 text-gray-400" /> : <ChevronRight className="h-5 w-5 text-gray-400" />}
                       <div>
-                        <CardTitle className="text-lg font-semibold">
-                          {session.name || `Session ${session.id.slice(0, 8)}`}
-                        </CardTitle>
-                        <CardDescription className="flex items-center gap-4 mt-1">
+                        <CardTitle className="text-lg font-semibold">{run.title || run.workflow || run.id}</CardTitle>
+                        <CardDescription className="mt-1 flex items-center gap-4">
                           <span className="flex items-center gap-1">
                             <Clock className="h-3 w-3" />
-                            {formatDate(session.createdAt)}
+                            {formatDate(run.createdAt)}
                           </span>
-                          {session.entries && (
-                            <span>{session.entries.length} entries</span>
-                          )}
+                          <span>{run.workflow || 'unknown workflow'}</span>
                         </CardDescription>
                       </div>
                     </div>
-                    <div className="flex items-center gap-4">
-                      {session.summary && (
-                        <div className="flex items-center gap-3 text-sm">
-                          <span className="text-green-600 dark:text-green-400">
-                            {session.summary.successful} applied
-                          </span>
-                          {session.summary.needsReview > 0 && (
-                            <span className="text-yellow-600 dark:text-yellow-400">
-                              {session.summary.needsReview} review
-                            </span>
-                          )}
-                          {session.summary.skipped > 0 && (
-                            <span className="text-gray-500 dark:text-gray-400">
-                              {session.summary.skipped} skipped
-                            </span>
-                          )}
-                        </div>
-                      )}
-                      <Button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          handleDeleteSession(session.id)
-                        }}
-                        variant="ghost"
-                        size="sm"
-                        className="text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
+                    <span className="rounded-full bg-primary-50 px-3 py-1 text-xs font-semibold text-primary-700 dark:bg-primary-900/20 dark:text-primary-200">
+                      <Sparkles className="mr-1 inline h-3 w-3" />
+                      prompt + queries
+                    </span>
                   </div>
                 </CardHeader>
 
-                {isExpanded && session.entries && session.entries.length > 0 && (
-                  <CardContent className="pt-0 pb-4">
-                    <div className="border-t border-gray-200 dark:border-stone-700 pt-4">
-                      <div className="space-y-3 max-h-96 overflow-y-auto">
-                        {session.entries.map((entry, index) => (
-                          <div
-                            key={index}
-                            className="flex gap-3 p-3 bg-gray-50 dark:bg-stone-900/50 rounded-lg text-sm"
-                          >
-                            <div className="flex-shrink-0 mt-0.5">
-                              {getEntryIcon(entry.type)}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center justify-between gap-2 mb-1">
-                                <span className="font-medium text-gray-900 dark:text-white">
-                                  {entry.action}
-                                </span>
-                                <span className="text-xs text-gray-500 dark:text-gray-400 flex-shrink-0">
-                                  {formatTime(entry.timestamp)}
-                                </span>
-                              </div>
-                              <p className="text-gray-600 dark:text-gray-400">
-                                {entry.reason}
-                              </p>
-                              {entry.result && (
-                                <p className="mt-1 text-gray-500 dark:text-gray-500 text-xs">
-                                  Result: {entry.result}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
+                {isExpanded && (
+                  <CardContent className="space-y-4 pt-0 pb-4">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <InfoBlock
+                        title="Prompt"
+                        lines={[
+                          `Prompt Key: ${run.prompt?.key || 'N/A'}`,
+                          `Rendered: ${promptPreview}`,
+                          `Search Calls: ${(run.searchCalls || []).length}`,
+                          `Verification Calls: ${(run.verificationCalls || []).length}`
+                        ]}
+                      />
+                      <InfoBlock
+                        title="Query Inputs"
+                        lines={[
+                          `Search Queries: ${searchQueries.length ? searchQueries.join(' | ') : 'N/A'}`,
+                          `Workflow: ${run.workflow || 'N/A'}`,
+                          `Created At: ${formatDate(run.createdAt)}`
+                        ]}
+                      />
                     </div>
-                  </CardContent>
-                )}
 
-                {isExpanded && (!session.entries || session.entries.length === 0) && (
-                  <CardContent className="pt-0 pb-4">
-                    <div className="border-t border-gray-200 dark:border-stone-700 pt-4 text-center text-sm text-gray-500 dark:text-gray-400">
-                      No entries in this session
-                    </div>
+                    {run.workspace ? (
+                      <InfoBlock
+                        title="Workspace"
+                        lines={[
+                          `Industry: ${run.workspace.industry || 'N/A'}`,
+                          `Country: ${run.workspace.country || 'N/A'}`,
+                          `Companies: ${(run.workspace.companies || []).length}`,
+                          `Keywords: ${(run.workspace.keywords || []).join(' | ') || 'N/A'}`
+                        ]}
+                      />
+                    ) : null}
                   </CardContent>
                 )}
               </Card>

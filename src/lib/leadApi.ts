@@ -272,7 +272,37 @@ export interface SimilarCompanyResult {
   similarity: number
 }
 
-export async function findSimilarCompanies(company: SimilarCompanyInput, topN = 10): Promise<{ results: SimilarCompanyResult[] }> {
+export interface SimilarCompanyResponse {
+  success?: boolean
+  configured?: boolean
+  runId?: string | null
+  recommendations?: SimilarCompanyResult[]
+  results: SimilarCompanyResult[]
+  metadata?: {
+    prompt?: {
+      key?: string
+      rendered?: string
+    }
+    searchCalls?: Array<{
+      provider?: string
+      query?: string
+      ok?: boolean
+      resultCount?: number
+    }>
+    verificationCalls?: Array<{
+      companyName?: string
+      address?: string
+      ok?: boolean
+      verified?: boolean
+      confidence?: number
+    }>
+    finalText?: string
+    parsedJson?: unknown
+    iterations?: number
+  }
+}
+
+export async function findSimilarCompanies(company: SimilarCompanyInput, topN = 10): Promise<SimilarCompanyResponse> {
   return requestJson<{ results: SimilarCompanyResult[] }>('/api/companies/find-similar', {
     method: 'POST',
     headers: {
@@ -280,6 +310,38 @@ export async function findSimilarCompanies(company: SimilarCompanyInput, topN = 
     },
     body: JSON.stringify({ company, topN })
   }, 'Failed to find similar companies')
+}
+
+export interface ResearchRunRecord {
+  id: string
+  workflow?: string
+  title?: string
+  createdAt?: string
+  prompt?: {
+    key?: string
+    rendered?: string
+  } | null
+  searchCalls?: Array<{
+    provider?: string
+    query?: string
+    ok?: boolean
+    resultCount?: number
+  }>
+  verificationCalls?: Array<{
+    companyName?: string
+    address?: string
+    ok?: boolean
+    verified?: boolean
+    confidence?: number
+  }>
+  workspace?: LeadWorkspace
+  sampleCompany?: SimilarCompanyInput
+  queryInput?: Record<string, unknown>
+}
+
+export async function fetchResearchRuns(): Promise<ResearchRunRecord[]> {
+  const data = await requestJson<{ runs?: ResearchRunRecord[] }>('/api/research-runs', undefined, 'Failed to load research runs')
+  return data.runs ?? []
 }
 
 export async function fetchCustomerData(): Promise<CustomerDataResponse> {
