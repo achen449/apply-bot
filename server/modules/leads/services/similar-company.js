@@ -49,6 +49,12 @@ const SIMILAR_COMPANY_PROMPT = `你是一位经验丰富的B2B市场研究专家
    - 提供清晰的相似理由说明
    - 对 shortlist 公司优先调用 verify_company，尽量加入地图验证信号
 
+## 执行预算（必须遵守）
+
+- 最多调用 2 次 search_web 和 1 次 verify_company；完成这些调用后立即输出最终 JSON
+- 不要为了增加数量继续搜索；公开证据不足时返回较少结果
+- 最终回复必须是可解析的 JSON，不要输出 Markdown 代码围栏或额外解释
+
 ## 注意事项
 
 - 确保找到的公司与样板公司在同一行业或相关领域
@@ -117,9 +123,37 @@ function normalizeResult({ payload, aiJson, aiResult }) {
     : []
 
   const metadata = buildAiMetadata(aiResult)
+  const createdAt = new Date().toISOString()
+  const firstSearchCall = metadata.searchCalls[0] || {}
+  const results = companies.map((company) => ({
+    company: {
+      title: company.companyName,
+      url: company.website,
+      snippet: company.reason,
+      provider: firstSearchCall.provider || 'ai',
+      query: firstSearchCall.query || '',
+      queryLabel: 'similar-company',
+      capturedAt: createdAt
+    },
+    profile: {
+      name: company.companyName,
+      website: company.website,
+      keywords: [],
+      rawProfile: company.reason
+    },
+    similarity: company.similarityScore / 100,
+    scores: {
+      total: company.similarityScore,
+      business: company.businessSimilarity,
+      market: company.marketSimilarity,
+      scale: company.scaleSimilarity
+    },
+    verified: company.verified
+  }))
 
   return {
     companies,
+    results,
     sampleCompany: {
       name: payload.companyName,
       website: payload.website,
@@ -129,7 +163,7 @@ function normalizeResult({ payload, aiJson, aiResult }) {
       country: payload.country
     },
     metadata,
-    createdAt: new Date().toISOString()
+    createdAt
   }
 }
 
@@ -185,7 +219,7 @@ export function createSimilarCompanyService({ aiAgent, tools = [], promptStorage
           maxResults
         }),
         tools,
-        maxIterations: 3,
+        maxIterations: 4,
         temperature: 0.2
       })
 

@@ -185,7 +185,7 @@ export function createOsintService({ aiAgent, tools = [], promptStorage, gistSto
           mode
         }),
         tools,
-        maxIterations: limits.maxIterations,
+        maxIterations: Math.min(limits.maxIterations, mode === 'economy' ? 3 : 4),
         temperature: 0.2
       })
 

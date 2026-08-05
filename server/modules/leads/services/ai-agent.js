@@ -152,6 +152,7 @@ export class AIAgent {
       apiHost: apiHost.trim().replace(/\/$/, ''),
       apiKey: apiKey.trim(),
       model: model.trim(),
+      reasoningEffort: hasText(config.reasoningEffort) ? config.reasoningEffort.trim() : '',
       timeoutMs: asPositiveInteger(config.timeoutMs, 60000),
       maxTokens: asPositiveInteger(config.maxTokens, 4000)
     }
@@ -191,6 +192,7 @@ export class AIAgent {
           messages,
           tools: toolDefinitions.length ? toolDefinitions : undefined,
           tool_choice: toolDefinitions.length ? 'auto' : undefined,
+          reasoning_effort: this.config.reasoningEffort || undefined,
           temperature,
           max_tokens: this.config.maxTokens
         })

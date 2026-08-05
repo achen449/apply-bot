@@ -57,11 +57,36 @@ function createSummary(companies) {
   }
 }
 
+function toUiToolCalls(toolCalls = []) {
+  return toolCalls.map((call, index) => ({
+    id: call.id || `tool-${index + 1}`,
+    type: 'function',
+    function: {
+      name: call.name || 'unknown_tool',
+      arguments: JSON.stringify(call.arguments || {}, null, 2)
+    },
+    status: call.result?.ok === false ? 'error' : 'completed',
+    result: JSON.stringify(call.result || {}, null, 2)
+  }))
+}
+
+function toUiCompanies(companies = []) {
+  return companies.map((company) => ({
+    name: company.name,
+    score: company.fitScore,
+    reasoning: company.whyFit || company.buyingRelevance || company.profile,
+    website: company.website,
+    country: company.country,
+    segment: company.segment
+  }))
+}
+
 function normalizeWorkspace({ payload, mode, aiJson, aiResult }) {
   const companies = Array.isArray(aiJson?.companies)
     ? aiJson.companies.map((company, index) => normalizeCompany(company, index, payload.country))
     : []
   const metadata = buildAiMetadata(aiResult)
+  const uiCompanies = toUiCompanies(companies)
 
   return {
     workspace: {
@@ -85,6 +110,8 @@ function normalizeWorkspace({ payload, mode, aiJson, aiResult }) {
       summary: createSummary(companies)
     },
     results: companies,
+    companies: uiCompanies,
+    toolCalls: toUiToolCalls(metadata.toolCalls),
     candidatePool: Array.isArray(aiJson?.candidatePool) ? aiJson.candidatePool : companies,
     shortlist: Array.isArray(aiJson?.shortlist) ? aiJson.shortlist : companies.slice(0, 5),
     metadata

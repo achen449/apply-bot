@@ -41,6 +41,7 @@ export function createGoogleMapsSearchService({ googleMapsAdapter }) {
         results: filtered.map((result) => ({
           ...result,
           location: normalizeGeo(result.location),
+          geo: normalizeGeo(result.geo || result.metadata?.geo),
           metadata: {
             ...(result.metadata || {}),
             geo: normalizeGeo(result.metadata?.geo)

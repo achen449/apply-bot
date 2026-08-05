@@ -66,7 +66,7 @@ The app can:
 
 ## Requirements
 
-- Node.js 21+
+- Node.js 24+ (the local server uses Node's built-in environment proxy support)
 - npm
 - Optional server-side provider credentials for live research:
   - `TAVILY_API_KEY`
@@ -74,6 +74,8 @@ The app can:
   - `GOOGLE_MAPS_API_KEY`
   - `GIST_ID`
   - `GITHUB_GIST_TOKEN`
+  - `AI_API_HOST`, `AI_API_KEY`, `AI_MODEL`
+  - optional `AI_REASONING_EFFORT` (set to `max` for the configured Luna relay)
 
 ## Quick start
 
@@ -83,6 +85,8 @@ npm run start
 ```
 
 Frontend runs through Vite and the backend runs through `server.js`.
+
+The local server command enables Node's environment-proxy support so provider calls can use the machine's local proxy when one is configured in `.env.local`. Proxy settings remain local-only and are never committed.
 
 For deployment and secret-handling rules, read:
 
@@ -114,4 +118,3 @@ There are still legacy job-application files and data structures elsewhere in th
 ## License
 
 MIT - see [LICENSE](LICENSE)
-

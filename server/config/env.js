@@ -45,6 +45,7 @@ export function loadServerEnv(rootDir) {
     AI_API_KEY: process.env.AI_API_KEY || '',
     AI_MODEL: process.env.AI_MODEL || '',
     AI_PROVIDER: process.env.AI_PROVIDER || 'openai-compatible',
+    AI_REASONING_EFFORT: process.env.AI_REASONING_EFFORT || '',
     AI_TIMEOUT_MS: Number.parseInt(process.env.AI_TIMEOUT_MS || '60000', 10),
     AI_MAX_TOKENS: Number.parseInt(process.env.AI_MAX_TOKENS || '4000', 10),
     API_CACHE_TTL_HOURS: Number.parseInt(process.env.API_CACHE_TTL_HOURS || '24', 10),

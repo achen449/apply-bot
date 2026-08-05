@@ -18,6 +18,52 @@ function sendMissingEnvResponse(res, message, missingEnvVars) {
   })
 }
 
+function sendMissingAiResponse(res, providerAvailability) {
+  return sendMissingEnvResponse(
+    res,
+    'AI_API_HOST, AI_API_KEY, and AI_MODEL are required for this AI workflow.',
+    providerAvailability?.ai?.missingEnvVars || ['AI_API_HOST', 'AI_API_KEY', 'AI_MODEL']
+  )
+}
+
+function toLegacyOsintReport(result) {
+  const run = result?.researchRun || result || {}
+  const subject = run.subject || {}
+  const overview = run.report?.overview || {}
+
+  return {
+    companyName: subject.companyName || overview.canonicalName || '',
+    website: subject.website || overview.officialWebsite || '',
+    address: subject.address || '',
+    capturedAt: run.createdAt || new Date().toISOString(),
+    basicInfo: {
+      legalName: overview.legalName || overview.canonicalName || '',
+      businessType: overview.businessType || '',
+      foundedDate: overview.foundedYear ? String(overview.foundedYear) : '',
+      status: run.verification?.entityStatus || run.status || 'unknown'
+    },
+    onlinePresence: {
+      officialWebsite: overview.officialWebsite || subject.website || ''
+    },
+    riskFlags: (run.report?.riskFlags || []).map((risk) => ({
+      category: risk.riskType || 'inconsistency',
+      severity: risk.severity || 'low',
+      description: risk.description || '',
+      source: risk.evidenceRefs?.join(', ') || ''
+    })),
+    associations: {
+      locations: [subject.address].filter(Boolean)
+    },
+    sources: (run.evidence || []).map((evidence) => ({
+      name: evidence.title || evidence.provider || 'Public source',
+      url: evidence.sourceUrl || '',
+      lastChecked: evidence.timestamp || run.createdAt || new Date().toISOString()
+    })),
+    research: run,
+    metadata: result?.metadata || {}
+  }
+}
+
 function sendServiceError(res, error, fallbackMessage) {
   if (error?.code === 'missing_env') {
     return sendMissingEnvResponse(res, error.message, error.missingEnvVars || [])
@@ -42,6 +88,7 @@ export function createApiRouter({
   leadFinderService,
   similarCompanyService,
   osintService,
+  fallbackOsintService,
   promptStorage,
   researchRunsStorage,
   usageStatsStorage,
@@ -72,6 +119,10 @@ export function createApiRouter({
         })
       }
 
+      if (!leadFinderService) {
+        return sendMissingAiResponse(res, providerAvailability)
+      }
+
       const result = await leadFinderService.discoverWorkspace({
         industry,
         country,
@@ -85,6 +136,8 @@ export function createApiRouter({
         success: true,
         workspace: result.workspace,
         results: result.results,
+        companies: result.companies,
+        toolCalls: result.toolCalls,
         candidatePool: result.candidatePool,
         shortlist: result.shortlist,
         metadata: result.metadata
@@ -129,6 +182,10 @@ export function createApiRouter({
         )
       }
 
+      if (!similarCompanyService) {
+        return sendMissingAiResponse(res, providerAvailability)
+      }
+
       if (!hasText(company?.name)) {
         return res.status(400).json({
           success: false,
@@ -137,10 +194,10 @@ export function createApiRouter({
         })
       }
 
-      const result = await similarCompanyService.findSimilarCompanies(
-        company,
-        toPositiveInteger(topN, 10)
-      )
+      const result = await similarCompanyService.findSimilarCompanies({
+        ...company,
+        maxResults: toPositiveInteger(topN, 10)
+      })
 
       await persistRun({
         id: `similar-company-${Date.now()}`,
@@ -151,15 +208,16 @@ export function createApiRouter({
         searchCalls: result.metadata?.searchCalls || [],
         verificationCalls: result.metadata?.verificationCalls || [],
         sampleCompany: result.sampleCompany,
-        results: result.companies || []
+        results: result.results || []
       })
 
       return res.json({
         success: true,
         configured: true,
         runId: result.runId || null,
-        recommendations: result.companies || [],
-        results: result.companies || [],
+        recommendations: result.results || [],
+        results: result.results || [],
+        companies: result.companies || [],
         metadata: result.metadata || {}
       })
     } catch (error) {
@@ -170,10 +228,19 @@ export function createApiRouter({
 
   // POST /api/osint
   router.post('/osint', async (req, res) => {
-    try {
-      const { company, mode } = req.body || {}
+    const { company, companyName, website, address, country, clues, researchQuestions, mode } = req.body || {}
+    const subject = company || {
+      name: companyName,
+      companyName,
+      website,
+      address,
+      country,
+      clues,
+      researchQuestions
+    }
 
-      if (!hasText(company?.name)) {
+    try {
+      if (!hasText(subject?.name || subject?.companyName)) {
         return res.status(400).json({
           success: false,
           code: 'invalid_payload',
@@ -181,15 +248,36 @@ export function createApiRouter({
         })
       }
 
-      const result = await osintService.investigateCompany(company, mode)
+      if (!osintService) {
+        return sendMissingAiResponse(res, providerAvailability)
+      }
 
-      return res.json({
-        success: true,
-        research: result.researchRun || null,
-        metadata: result.metadata || {}
+      const result = await osintService.investigateCompany({
+        ...subject,
+        companyName: subject.companyName || subject.name,
+        mode
       })
+
+      return res.json(toLegacyOsintReport(result))
     } catch (error) {
       console.error('Error in osint:', error)
+
+      if (fallbackOsintService && (error?.code === 'ai_request_timeout' || error?.code === 'ai_request_failed')) {
+        try {
+          const fallback = await fallbackOsintService.research({
+            ...(company || {}),
+            companyName: subject.companyName || subject.name,
+            website: subject.website,
+            address: subject.address,
+            country: subject.country,
+            mode
+          })
+          return res.json(toLegacyOsintReport(fallback))
+        } catch (fallbackError) {
+          console.error('Fallback OSINT research failed:', fallbackError)
+        }
+      }
+
       return sendServiceError(res, error, 'Failed to investigate company')
     }
   })

@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "test:leads": "node --test test/lead-discovery.test.js",
-    "server": "node server.js",
+    "server": "node --use-env-proxy --env-file=.env.local server.js",
     "start": "concurrently \"npm run server\" \"npm run dev\""
   },
   "dependencies": {

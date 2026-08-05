@@ -33,14 +33,19 @@ const writableRoot = isServerlessRuntime ? path.join(os.tmpdir(), 'apply-bot') :
 
 const {
   TAVILY_API_KEY,
+  TAVILY_API_KEY_BACKUP,
   BRAVE_API_KEY,
+  BRAVE_API_KEY_BACKUP,
   GOOGLE_MAPS_API_KEY,
   GIST_ID,
   GITHUB_GIST_TOKEN,
   GIST_CUSTOMER_DATA_FILENAME,
   AI_API_HOST,
   AI_API_KEY,
-  AI_MODEL
+  AI_MODEL,
+  AI_REASONING_EFFORT,
+  AI_TIMEOUT_MS,
+  AI_MAX_TOKENS
 } = loadServerEnv(projectRoot)
 
 const gistService = new GistService(
@@ -54,19 +59,20 @@ const aiAgent = (AI_API_HOST && AI_API_KEY && AI_MODEL)
       apiHost: AI_API_HOST,
       apiKey: AI_API_KEY,
       model: AI_MODEL,
-      timeoutMs: 15000,
-      maxTokens: 2200
+      reasoningEffort: AI_REASONING_EFFORT,
+      timeoutMs: AI_TIMEOUT_MS,
+      maxTokens: AI_MAX_TOKENS
     })
   : null
 
 const tavilyAdapter = createTavilyAdapter({
   apiKey: TAVILY_API_KEY,
-  apiKeys: []
+  apiKeys: [TAVILY_API_KEY_BACKUP]
 })
 
 const braveAdapter = createBraveAdapter({
   apiKey: BRAVE_API_KEY,
-  apiKeys: []
+  apiKeys: [BRAVE_API_KEY_BACKUP]
 })
 
 const googleMapsAdapter = createGoogleMapsAdapter({
@@ -169,12 +175,12 @@ const leadFeatureUnavailable = {
 
 const providerAvailability = {
   tavily: {
-    available: Boolean(TAVILY_API_KEY),
-    missingEnvVars: TAVILY_API_KEY ? [] : ['TAVILY_API_KEY']
+    available: Boolean(TAVILY_API_KEY || TAVILY_API_KEY_BACKUP),
+    missingEnvVars: TAVILY_API_KEY || TAVILY_API_KEY_BACKUP ? [] : ['TAVILY_API_KEY']
   },
   brave: {
-    available: Boolean(BRAVE_API_KEY),
-    missingEnvVars: BRAVE_API_KEY ? [] : ['BRAVE_API_KEY']
+    available: Boolean(BRAVE_API_KEY || BRAVE_API_KEY_BACKUP),
+    missingEnvVars: BRAVE_API_KEY || BRAVE_API_KEY_BACKUP ? [] : ['BRAVE_API_KEY']
   },
   googleMaps: {
     available: Boolean(GOOGLE_MAPS_API_KEY),
@@ -189,6 +195,20 @@ const providerAvailability = {
     ].filter(Boolean)
   }
 }
+
+const evidenceOsintService = createOsintResearchService({
+  googleMapsSearch: googleMapsSearchService.search,
+  braveSearch: braveAdapter.search,
+  tavilySearch: tavilyAdapter.search,
+  providerAvailability: {
+    googleMaps: providerAvailability.googleMaps.available,
+    brave: providerAvailability.brave.available,
+    tavily: providerAvailability.tavily.available,
+    googleMapsReason: providerAvailability.googleMaps.missingEnvVars.join(', '),
+    braveReason: providerAvailability.brave.missingEnvVars.join(', '),
+    tavilyReason: providerAvailability.tavily.missingEnvVars.join(', ')
+  }
+})
 
 function sendMissingEnvResponse(res, message, missingEnvVars) {
   return res.status(503).json({
@@ -669,6 +689,7 @@ const leadApiRouter = createLeadApiRouter({
   leadFinderService,
   similarCompanyService,
   osintService,
+  fallbackOsintService: evidenceOsintService,
   promptStorage,
   researchRunsStorage: researchRunsStorageAdapter,
   usageStatsStorage: usageStatsStorageAdapter,
@@ -677,11 +698,9 @@ const leadApiRouter = createLeadApiRouter({
 
 const leadSupportRouter = createLeadSupportRouter({
   addressClassificationService,
-  companySimilarityService: similarCompanyService || {
-    async findSimilarCompanies(company) {
-      return { companies: [], sampleCompany: company, metadata: {} }
-    }
-  },
+  companySimilarityService: similarCompanyService,
+  googleMapsSearchService,
+  researchRunsStorage: researchRunsStorageAdapter,
   gistCustomerDataService: gistService,
   providerAvailability
 })
