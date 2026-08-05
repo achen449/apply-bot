@@ -92,7 +92,8 @@ export function createApiRouter({
   promptStorage,
   researchRunsStorage,
   usageStatsStorage,
-  providerAvailability
+  providerAvailability,
+  aiConfiguration
 }) {
   const router = express.Router()
 
@@ -105,6 +106,13 @@ export function createApiRouter({
       }
     }
   }
+
+  router.get('/ai-config', (_req, res) => {
+    return res.json({
+      success: true,
+      ...aiConfiguration
+    })
+  })
 
   // POST /api/lead-finder
   router.post('/lead-finder', async (req, res) => {

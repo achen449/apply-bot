@@ -196,6 +196,21 @@ const providerAvailability = {
   }
 }
 
+const aiConfiguration = {
+  configured: providerAvailability.ai.available,
+  host: (() => {
+    try {
+      return AI_API_HOST ? new URL(AI_API_HOST).hostname : ''
+    } catch {
+      return ''
+    }
+  })(),
+  model: AI_MODEL,
+  reasoningEffort: AI_REASONING_EFFORT || 'default',
+  timeoutMs: AI_TIMEOUT_MS,
+  maxTokens: AI_MAX_TOKENS
+}
+
 const evidenceOsintService = createOsintResearchService({
   googleMapsSearch: googleMapsSearchService.search,
   braveSearch: braveAdapter.search,
@@ -693,7 +708,8 @@ const leadApiRouter = createLeadApiRouter({
   promptStorage,
   researchRunsStorage: researchRunsStorageAdapter,
   usageStatsStorage: usageStatsStorageAdapter,
-  providerAvailability
+  providerAvailability,
+  aiConfiguration
 })
 
 const leadSupportRouter = createLeadSupportRouter({
