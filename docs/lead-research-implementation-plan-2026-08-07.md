@@ -267,7 +267,7 @@ UI 验收：
 
 质量门禁结果：
 
-- `node --test test/*.js`：39/39 通过。
+- `node --test test/*.js`：52/52 通过（最终回归）。
 - `npm run build`：通过；仅有既有 Vite chunk size warning。
 - `npm run lint`：通过。
 - 环境变量文件未修改；tracked files 未发现长格式 API token 模式。
