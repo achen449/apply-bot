@@ -89,6 +89,43 @@ function buildToolError(code, message, details = {}) {
   }
 }
 
+function attachExecutionContext(error, { toolCalls, iterations, messages }) {
+  if (!error || typeof error !== 'object') {
+    return error
+  }
+
+  error.toolCalls = toolCalls
+  error.iterations = iterations
+  error.messages = messages
+  return error
+}
+
+function buildDeadlineError(phase, remainingMs) {
+  const error = new Error(`AI task deadline reached during ${phase}.`)
+  error.code = 'ai_request_timeout'
+  error.phase = phase
+  error.remainingMs = Math.max(remainingMs, 0)
+  return error
+}
+
+async function executeWithTimeout(executor, argumentsObject, timeoutMs, toolName) {
+  let timeout
+  const timeoutPromise = new Promise((resolve) => {
+    timeout = setTimeout(() => {
+      resolve(buildToolError('tool_timeout', `Tool ${toolName || 'unknown'} timed out after ${timeoutMs}ms.`))
+    }, timeoutMs)
+  })
+
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => executor(argumentsObject)),
+      timeoutPromise
+    ])
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
 function readToolCalls(message) {
   if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
     return message.tool_calls
@@ -158,7 +195,19 @@ export class AIAgent {
     }
   }
 
-  async executeTask({ systemPrompt, userInput, messages: inputMessages = [], tools = [], maxIterations = 10, temperature = 0.2 }) {
+  async executeTask({
+    systemPrompt,
+    userInput,
+    messages: inputMessages = [],
+    tools = [],
+    maxIterations = 10,
+    temperature = 0.2,
+    deadlineMs = 0,
+    timeoutMs = 0,
+    maxTokens = 0,
+    maxToolCalls = 0,
+    toolTimeoutMs = 0
+  }) {
     if (!hasText(userInput) && inputMessages.length === 0) {
       throw new Error('userInput or messages are required.')
     }
@@ -177,26 +226,66 @@ export class AIAgent {
 
     const toolCalls = []
     let iterations = 0
+    const taskDeadlineMs = asPositiveInteger(deadlineMs, 0)
+    const taskDeadlineAt = taskDeadlineMs > 0 ? Date.now() + taskDeadlineMs : 0
+    const taskTimeoutMs = asPositiveInteger(timeoutMs, this.config.timeoutMs)
+    const taskMaxTokens = asPositiveInteger(maxTokens, this.config.maxTokens)
+    const taskMaxToolCalls = asPositiveInteger(maxToolCalls, 0)
+    const taskToolTimeoutMs = asPositiveInteger(toolTimeoutMs, 0)
+
+    function remainingTaskMs() {
+      return taskDeadlineAt > 0 ? taskDeadlineAt - Date.now() : Number.POSITIVE_INFINITY
+    }
+
+    function ensureTaskBudget(phase, reserveMs = 500) {
+      const remainingMs = remainingTaskMs()
+
+      if (remainingMs <= reserveMs) {
+        throw attachExecutionContext(buildDeadlineError(phase, remainingMs), {
+          toolCalls,
+          iterations,
+          messages
+        })
+      }
+
+      return remainingMs
+    }
 
     while (iterations < maxIterations) {
       iterations += 1
 
-      const response = await fetchWithTimeout(`${this.config.apiHost}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.config.apiKey}`
-        },
-        body: JSON.stringify({
-          model: this.config.model,
-          messages,
-          tools: toolDefinitions.length ? toolDefinitions : undefined,
-          tool_choice: toolDefinitions.length ? 'auto' : undefined,
-          reasoning_effort: this.config.reasoningEffort || undefined,
-          temperature,
-          max_tokens: this.config.maxTokens
+      const remainingBeforeAi = ensureTaskBudget('AI request')
+      const effectiveTimeoutMs = Math.min(
+        taskTimeoutMs,
+        Number.isFinite(remainingBeforeAi) ? Math.max(500, remainingBeforeAi - 250) : taskTimeoutMs
+      )
+
+      let response
+
+      try {
+        response = await fetchWithTimeout(`${this.config.apiHost}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.config.apiKey}`
+          },
+          body: JSON.stringify({
+            model: this.config.model,
+            messages,
+            tools: toolDefinitions.length ? toolDefinitions : undefined,
+            tool_choice: toolDefinitions.length ? 'auto' : undefined,
+            reasoning_effort: this.config.reasoningEffort || undefined,
+            temperature,
+            max_tokens: taskMaxTokens
+          })
+        }, effectiveTimeoutMs)
+      } catch (error) {
+        throw attachExecutionContext(error, {
+          toolCalls,
+          iterations,
+          messages
         })
-      }, this.config.timeoutMs)
+      }
 
       if (!response.ok) {
         const responseText = await readResponseText(response)
@@ -235,10 +324,26 @@ export class AIAgent {
           if (!toolResult) {
             if (typeof executor !== 'function') {
               toolResult = buildToolError('missing_tool_executor', `No executor is registered for tool: ${toolName || 'unknown'}`)
+            } else if (taskMaxToolCalls > 0 && toolCalls.length >= taskMaxToolCalls) {
+              toolResult = buildToolError('tool_budget_exceeded', `Tool budget exceeded after ${taskMaxToolCalls} calls.`)
             } else {
               try {
-                toolResult = await executor(parsedArguments)
+                const remainingBeforeTool = ensureTaskBudget(`tool ${toolName || 'unknown'}`)
+                const effectiveToolTimeoutMs = taskToolTimeoutMs > 0
+                  ? Math.min(taskToolTimeoutMs, Math.max(500, remainingBeforeTool - 250))
+                  : Math.max(500, remainingBeforeTool - 250)
+                toolResult = taskDeadlineAt > 0 || taskToolTimeoutMs > 0
+                  ? await executeWithTimeout(executor, parsedArguments, effectiveToolTimeoutMs, toolName)
+                  : await executor(parsedArguments)
               } catch (error) {
+                if (error?.code === 'ai_request_timeout') {
+                  throw attachExecutionContext(error, {
+                    toolCalls,
+                    iterations,
+                    messages
+                  })
+                }
+
                 toolResult = buildToolError('tool_execution_failed', error.message || `Tool ${toolName} failed.`)
               }
             }
@@ -269,7 +374,13 @@ export class AIAgent {
       throw new Error('AI response did not return a final answer or tool calls.')
     }
 
-    throw new Error(`AI agent exceeded maximum iterations: ${maxIterations}`)
+    const error = new Error(`AI agent exceeded maximum iterations: ${maxIterations}`)
+    error.code = 'ai_agent_max_iterations'
+    throw attachExecutionContext(error, {
+      toolCalls,
+      iterations,
+      messages
+    })
   }
 }
 

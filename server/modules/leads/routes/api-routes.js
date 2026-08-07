@@ -93,14 +93,35 @@ export function createApiRouter({
   researchRunsStorage,
   usageStatsStorage,
   providerAvailability,
-  aiConfiguration
+  aiConfiguration,
+  persistTimeoutMs = 0
 }) {
   const router = express.Router()
 
   async function persistRun(run) {
     if (researchRunsStorage && typeof researchRunsStorage.save === 'function') {
+      const savePromise = Promise.resolve()
+        .then(() => researchRunsStorage.save(run))
+        .catch((error) => {
+          console.error('Failed to persist research run:', error)
+          return null
+        })
+
+      if (persistTimeoutMs > 0) {
+        const timeoutPromise = new Promise((resolve) => {
+          setTimeout(() => resolve('persist_timeout'), persistTimeoutMs)
+        })
+        const result = await Promise.race([savePromise, timeoutPromise])
+
+        if (result === 'persist_timeout') {
+          console.error(`Research run persistence exceeded the ${persistTimeoutMs}ms serverless budget.`)
+        }
+
+        return
+      }
+
       try {
-        await researchRunsStorage.save(run)
+        await savePromise
       } catch (error) {
         console.error('Failed to persist research run:', error)
       }
@@ -142,6 +163,8 @@ export function createApiRouter({
 
       const payload = {
         success: true,
+        status: result.status || result.metadata?.status || 'completed',
+        partial: Boolean(result.partial || result.metadata?.partial),
         workspace: result.workspace,
         results: result.results,
         companies: result.companies,

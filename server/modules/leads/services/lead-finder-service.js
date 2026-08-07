@@ -57,6 +57,104 @@ function createSummary(companies) {
   }
 }
 
+function buildPartialLeadFinderJson(toolCalls = []) {
+  const companies = []
+  const byKey = new Map()
+
+  function upsertCompany(candidate = {}) {
+    const name = normalizeText(candidate.name || candidate.companyName)
+    const website = normalizeText(candidate.website || candidate.url)
+
+    if (!name) {
+      return
+    }
+
+    const key = (website || name).toLowerCase()
+    const existing = byKey.get(key)
+
+    if (existing) {
+      Object.assign(existing, {
+        website: existing.website || website,
+        address: existing.address || normalizeText(candidate.address),
+        reason: existing.reason || normalizeText(candidate.reason || candidate.description),
+        source: existing.source || normalizeText(candidate.source || candidate.provider),
+        sourceUrl: existing.sourceUrl || normalizeText(candidate.sourceUrl || candidate.url),
+        mapVerified: existing.mapVerified || Boolean(candidate.mapVerified || candidate.verified),
+        score: Math.max(existing.score || 0, Number(candidate.score) || 0)
+      })
+      return
+    }
+
+    const normalized = {
+      name,
+      website,
+      address: normalizeText(candidate.address),
+      score: Number(candidate.score) || 45,
+      reason: normalizeText(candidate.reason || candidate.description || candidate.snippet, 'Collected from public provider evidence.'),
+      source: normalizeText(candidate.source || candidate.provider, 'provider'),
+      sourceUrl: normalizeText(candidate.sourceUrl || candidate.url || website),
+      mapVerified: Boolean(candidate.mapVerified || candidate.verified),
+      profile: normalizeText(candidate.profile || candidate.description || candidate.snippet)
+    }
+
+    byKey.set(key, normalized)
+    companies.push(normalized)
+  }
+
+  for (const call of Array.isArray(toolCalls) ? toolCalls : []) {
+    if (call?.name === 'search_web' && call.result?.ok !== false) {
+      for (const result of call.result?.results || []) {
+        upsertCompany({
+          name: result.title,
+          website: result.url,
+          address: result.address,
+          snippet: result.snippet,
+          provider: result.provider || call.arguments?.provider,
+          sourceUrl: result.url
+        })
+      }
+    }
+
+    if (call?.name === 'verify_company' && call.result?.ok !== false) {
+      const companyName = call.arguments?.company_name || call.arguments?.companyName
+      const candidates = call.result?.candidates || []
+
+      if (candidates.length > 0) {
+        for (const candidate of candidates) {
+          upsertCompany({
+            name: candidate.name || companyName,
+            website: candidate.website,
+            address: candidate.address,
+            score: Number(candidate.confidence || 0) * 100,
+            reason: candidate.address ? `Google Maps candidate: ${candidate.address}` : 'Google Maps candidate.',
+            provider: 'google-maps',
+            sourceUrl: candidate.placeId ? `https://www.google.com/maps/search/?api=1&query_place_id=${encodeURIComponent(candidate.placeId)}` : '',
+            verified: Number(candidate.confidence || 0) >= 0.5
+          })
+        }
+      } else {
+        upsertCompany({
+          name: companyName,
+          address: call.result?.address,
+          score: Number(call.result?.confidence || 0) * 100,
+          reason: call.result?.address ? `Google Maps candidate: ${call.result.address}` : 'Company verification was attempted.',
+          provider: 'google-maps',
+          verified: Boolean(call.result?.verified)
+        })
+      }
+    }
+  }
+
+  const shortlist = companies.slice(0, 5)
+
+  return {
+    recommendedSegments: [],
+    companies,
+    candidatePool: companies,
+    shortlist
+  }
+}
+
 function toUiToolCalls(toolCalls = []) {
   return toolCalls.map((call, index) => ({
     id: call.id || `tool-${index + 1}`,
@@ -89,8 +187,11 @@ function normalizeWorkspace({ payload, mode, aiJson, aiResult }) {
   const uiCompanies = toUiCompanies(companies)
 
   return {
+    status: aiResult.status || 'completed',
+    partial: Boolean(aiResult.partial),
     workspace: {
       id: createId('workspace'),
+      status: aiResult.status || 'completed',
       industry: normalizeText(payload.industry),
       country: normalizeText(payload.country),
       keywords: normalizeStringArray(payload.keywords),
@@ -118,7 +219,18 @@ function normalizeWorkspace({ payload, mode, aiJson, aiResult }) {
   }
 }
 
-export function createLeadFinderService({ aiAgent, tools = [], promptStorage, prompt = LEAD_FINDER_PROMPT } = {}) {
+export function createLeadFinderService({
+  aiAgent,
+  tools = [],
+  promptStorage,
+  prompt = LEAD_FINDER_PROMPT,
+  requestBudgetMs = 0,
+  maxIterationsCap = 0,
+  aiTimeoutMs = 0,
+  maxTokens = 0,
+  maxToolCalls = 0,
+  toolTimeoutMs = 0
+} = {}) {
   if (!aiAgent || typeof aiAgent.executeTask !== 'function') {
     throw new Error('createLeadFinderService requires an aiAgent with executeTask.')
   }
@@ -151,20 +263,67 @@ export function createLeadFinderService({ aiAgent, tools = [], promptStorage, pr
         }
       })
 
-      const aiResult = await aiAgent.executeTask({
-        systemPrompt,
-        userInput: JSON.stringify({
-          industry,
-          country: normalizeText(payload.country),
-          keywords,
-          targetTypes: normalizeStringArray(payload.targetTypes),
-          excludeTypes: normalizeStringArray(payload.excludeTypes),
-          mode
-        }),
-        tools,
-        maxIterations: limits.maxIterations,
-        temperature: 0.2
-      })
+      const effectiveMaxIterations = maxIterationsCap > 0
+        ? Math.min(limits.maxIterations, maxIterationsCap)
+        : limits.maxIterations
+
+      let aiResult
+
+      try {
+        aiResult = await aiAgent.executeTask({
+          systemPrompt,
+          userInput: JSON.stringify({
+            industry,
+            country: normalizeText(payload.country),
+            keywords,
+            targetTypes: normalizeStringArray(payload.targetTypes),
+            excludeTypes: normalizeStringArray(payload.excludeTypes),
+            mode
+          }),
+          tools,
+          maxIterations: effectiveMaxIterations,
+          temperature: 0.2,
+          deadlineMs: requestBudgetMs,
+          timeoutMs: aiTimeoutMs,
+          maxTokens,
+          maxToolCalls,
+          toolTimeoutMs
+        })
+      } catch (error) {
+        const canReturnPartial = requestBudgetMs > 0 && [
+          'ai_request_timeout',
+          'ai_agent_max_iterations'
+        ].includes(error?.code)
+
+        if (!canReturnPartial) {
+          throw error
+        }
+
+        const partialAiResult = {
+          finalText: '',
+          parsedJson: null,
+          toolCalls: error.toolCalls || [],
+          iterations: error.iterations || 0,
+          messages: error.messages || [],
+          status: 'needs_review',
+          partial: true,
+          error: {
+            code: error.code,
+            message: error.message
+          },
+          prompt: {
+            key: 'lead-finder',
+            rendered: systemPrompt
+          }
+        }
+
+        return normalizeWorkspace({
+          payload: { ...payload, industry, keywords },
+          mode,
+          aiJson: buildPartialLeadFinderJson(partialAiResult.toolCalls),
+          aiResult: partialAiResult
+        })
+      }
 
       return normalizeWorkspace({
         payload: { ...payload, industry, keywords },

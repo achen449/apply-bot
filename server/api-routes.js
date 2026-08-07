@@ -31,6 +31,19 @@ const projectRoot = path.resolve(__dirname, '..')
 const isServerlessRuntime = Boolean(process.env.VERCEL || process.env.LAMBDA_TASK_ROOT || process.env.AWS_LAMBDA_FUNCTION_NAME)
 const writableRoot = isServerlessRuntime ? path.join(os.tmpdir(), 'apply-bot') : projectRoot
 
+// Keep the configured environment values unchanged, but enforce a bounded
+// synchronous budget for Vercel's current 60-second runtime limit.
+const serverlessLeadFinderPolicy = isServerlessRuntime
+  ? {
+      requestBudgetMs: 45000,
+      aiTimeoutMs: 10000,
+      maxTokens: 4000,
+      maxIterationsCap: 2,
+      maxToolCalls: 4,
+      toolTimeoutMs: 4000
+    }
+  : {}
+
 const {
   TAVILY_API_KEY,
   TAVILY_API_KEY_BACKUP,
@@ -87,13 +100,14 @@ const aiTools = aiAgent ? createLeadAITools({
   tavilyAdapter,
   braveAdapter,
   googleMapsAdapter,
-  timeoutMs: 8000
+  timeoutMs: isServerlessRuntime ? 4000 : 8000
 }) : []
 
 const leadFinderService = aiAgent ? createLeadFinderService({
   aiAgent,
   tools: aiTools,
-  promptStorage: gistService
+  promptStorage: gistService,
+  ...serverlessLeadFinderPolicy
 }) : null
 
 const similarCompanyService = aiAgent ? createSimilarCompanyService({
@@ -709,7 +723,8 @@ const leadApiRouter = createLeadApiRouter({
   researchRunsStorage: researchRunsStorageAdapter,
   usageStatsStorage: usageStatsStorageAdapter,
   providerAvailability,
-  aiConfiguration
+  aiConfiguration,
+  persistTimeoutMs: isServerlessRuntime ? 5000 : 0
 })
 
 const leadSupportRouter = createLeadSupportRouter({
