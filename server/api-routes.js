@@ -36,7 +36,7 @@ const writableRoot = isServerlessRuntime ? path.join(os.tmpdir(), 'apply-bot') :
 const serverlessLeadFinderPolicy = isServerlessRuntime
   ? {
       requestBudgetMs: 45000,
-      aiTimeoutMs: 10000,
+      aiTimeoutMs: 20000,
       maxTokens: 4000,
       maxIterationsCap: 2,
       maxToolCalls: 4,

@@ -74,7 +74,7 @@ test('serverless lead finder returns partial evidence when the AI budget is exha
   const service = createLeadFinderService({
     aiAgent,
     requestBudgetMs: 45000,
-    aiTimeoutMs: 10000,
+    aiTimeoutMs: 20000,
     maxTokens: 4000,
     maxIterationsCap: 2,
     maxToolCalls: 4,
@@ -89,7 +89,7 @@ test('serverless lead finder returns partial evidence when the AI budget is exha
   })
 
   assert.equal(receivedOptions.deadlineMs, 45000)
-  assert.equal(receivedOptions.timeoutMs, 10000)
+  assert.equal(receivedOptions.timeoutMs, 20000)
   assert.equal(receivedOptions.maxTokens, 4000)
   assert.equal(receivedOptions.maxIterations, 2)
   assert.equal(receivedOptions.maxToolCalls, 4)
