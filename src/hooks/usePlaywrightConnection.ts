@@ -3,6 +3,14 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 const DEFAULT_MCP_RELAY_URL = 'ws://localhost:3000'
 const EXTENSION_NAMESPACE = 'playwright-mcp-bridge'
 
+type ExtensionPayload = Record<string, unknown>
+type ExtensionResponse = ExtensionPayload & {
+  success?: boolean
+  connected?: boolean
+  connectedTabId?: number | null
+  error?: string
+}
+
 export interface PlaywrightConnectionStatus {
   connected: boolean
   connectedTabId: number | null
@@ -26,13 +34,13 @@ export function usePlaywrightConnection() {
 
   // Store pending requests
   const pendingRequests = useRef<Map<string, {
-    resolve: (value: any) => void
-    reject: (error: any) => void
+    resolve: (value: ExtensionResponse) => void
+    reject: (error: Error) => void
     timeout: ReturnType<typeof setTimeout>
   }>>(new Map())
 
   // Send a message to the extension via content script
-  const sendMessage = useCallback((type: string, payload: any = {}): Promise<any> => {
+  const sendMessage = useCallback((type: string, payload: ExtensionPayload = {}): Promise<ExtensionResponse> => {
     return new Promise((resolve, reject) => {
       const requestId = generateRequestId()
 
@@ -162,7 +170,7 @@ export function usePlaywrightConnection() {
         setStatus(prev => ({
           ...prev,
           connected: true,
-          connectedTabId: response.connectedTabId,
+          connectedTabId: response.connectedTabId ?? null,
           connecting: false,
           error: null,
         }))
@@ -176,8 +184,8 @@ export function usePlaywrightConnection() {
         }))
         return { success: false, error: errorMsg }
       }
-    } catch (error: any) {
-      const errorMsg = error.message || 'Failed to communicate with extension'
+    } catch (error: unknown) {
+      const errorMsg = error instanceof Error ? error.message : 'Failed to communicate with extension'
       setStatus(prev => ({
         ...prev,
         connecting: false,
@@ -206,8 +214,8 @@ export function usePlaywrightConnection() {
         return { success: true }
       }
       return { success: false, error: response?.error || 'Failed to disconnect' }
-    } catch (error: any) {
-      return { success: false, error: error.message }
+    } catch (error: unknown) {
+      return { success: false, error: error instanceof Error ? error.message : 'Failed to communicate with extension' }
     }
   }, [status.extensionInstalled, sendMessage])
 

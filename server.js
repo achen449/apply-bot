@@ -1,10 +1,11 @@
 import express from 'express'
-import cors from 'cors'
 import path from 'path'
 import net from 'net'
 import { fileURLToPath } from 'url'
 import apiRoutes from './server/api-routes.js'
+import { evidenceOsintService } from './server/api-routes.js'
 import { createLeadOsintRouter } from './server/modules/leads/routes/osint-routes.js'
+import { createApiSecurityMiddleware } from './server/security.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -12,15 +13,16 @@ const __dirname = path.dirname(__filename)
 const app = express()
 const DEFAULT_PORT = 3010
 
-// CORS configuration
-app.use(cors())
+// Same-origin/API access policy. APP_ACCESS_TOKEN remains optional so the
+// existing local Vite proxy continues to work without changing env values.
+app.use(createApiSecurityMiddleware())
 
 // JSON parser
-app.use(express.json())
+app.use(express.json({ limit: '1mb' }))
 
 // API routes
 app.use('/api', apiRoutes)
-const osintResearchService = { async research() { return { status: 'needs_review', unresolvedQuestions: [] } } }
+const osintResearchService = evidenceOsintService
 app.post('/api/lead-workspaces/discover', (_req, _res, next) => next())
 app.use('/api/lead-workspaces', createLeadOsintRouter({ osintResearchService }))
 app.get('/api/lead-workspaces/:id', (_req, _res, next) => next())

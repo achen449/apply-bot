@@ -11,6 +11,11 @@ import {
   readAiJson,
   resolvePrompt
 } from './ai-service-utils.js'
+import {
+  dedupeCompanyCandidates,
+  isLikelyBuyerCandidate,
+  matchesTargetCountry
+} from '../shared/company-result-normalizer.js'
 
 function normalizeCompany(company = {}, index, country) {
   const name = normalizeText(company.name || company.companyName, `AI candidate ${index + 1}`)
@@ -40,21 +45,72 @@ function normalizeCompany(company = {}, index, country) {
     mainProducts: normalizeStringArray(company.mainProducts || company.products),
     targetApplications: normalizeStringArray(company.targetApplications || company.applications),
     address: normalizeText(company.address),
+    phone: normalizeText(company.phone),
+    emails: Array.isArray(company.emails) ? company.emails : [],
+    contactEmails: normalizeStringArray(company.contactEmails || company.emails),
+    contactPages: normalizeStringArray(company.contactPages),
     notes: normalizeText(company.notes),
     officialWebsiteLikely: Boolean(company.officialWebsiteLikely || website),
     matchedProviders: normalizeStringArray(company.matchedProviders),
     matchedQueryLabels: normalizeStringArray(company.matchedQueryLabels),
-    mapVerified: Boolean(company.mapVerified || company.verified)
+    mapVerified: Boolean(company.mapVerified || company.verified),
+    map: company.map || null,
+    evidence: Array.isArray(company.evidence) ? company.evidence : [],
+    dataQuality: company.dataQuality || null
   }
 }
 
 function createSummary(companies) {
   return {
     companyCount: companies.length,
-    contactCount: 0,
+    contactCount: companies.filter((company) => company.phone || company.contactEmails?.length).length,
     draftCount: 0,
     topProfiles: [...new Set(companies.map((company) => company.profile).filter(Boolean))].slice(0, 4)
   }
+}
+
+function collectCompanyCandidates(aiJson, toolCalls = []) {
+  const candidates = Array.isArray(aiJson?.companies)
+    ? aiJson.companies.map((candidate) => ({
+        // AI may rank or explain a candidate, but it is not a source of
+        // identity, address, phone, email, or map evidence.
+        name: candidate.name || candidate.companyName,
+        website: candidate.website || candidate.url,
+        reason: candidate.reason || candidate.whyFit || candidate.description,
+        description: candidate.description,
+        source: 'ai',
+        _evidenceOrigin: 'ai'
+      }))
+    : []
+
+  for (const call of Array.isArray(toolCalls) ? toolCalls : []) {
+    if (call?.name !== 'search_web' || call.result?.ok === false) {
+      continue
+    }
+
+    for (const item of call.result?.results || []) {
+      candidates.push({
+        name: item.title,
+        website: item.url,
+        reason: item.snippet,
+        description: item.snippet,
+        source: item.provider || call.arguments?.provider,
+        sourceUrl: item.url,
+        _evidenceOrigin: 'provider',
+        address: item.address,
+        phone: item.phone,
+        matchedQueryLabels: [call.arguments?.query || item.query].filter(Boolean),
+        evidence: [{
+          type: 'public_web',
+          sourceUrl: item.url,
+          title: item.title,
+          snippet: item.snippet
+        }]
+      })
+    }
+  }
+
+  return candidates
 }
 
 function buildPartialLeadFinderJson(toolCalls = []) {
@@ -175,23 +231,66 @@ function toUiCompanies(companies = []) {
     reasoning: company.whyFit || company.buyingRelevance || company.profile,
     website: company.website,
     country: company.country,
-    segment: company.segment
+    segment: company.segment,
+    address: company.address,
+    phone: company.phone,
+    contactEmails: company.contactEmails,
+    mapVerified: company.mapVerified,
+    dataQuality: company.dataQuality
   }))
 }
 
+async function enrichWorkspaceResult(result, companyEnrichmentService, payload, mode) {
+  if (!companyEnrichmentService || typeof companyEnrichmentService.enrichCompanies !== 'function') {
+    return result
+  }
+
+  const enrichment = await companyEnrichmentService.enrichCompanies(result.workspace.companies, {
+    country: payload.country,
+    maxResults: getModeLimits(mode).maxVerifications,
+    existingVerificationCalls: result.metadata.verificationCalls || []
+  })
+
+  result.workspace.companies = enrichment.companies
+  result.workspace.summary = createSummary(enrichment.companies)
+  result.results = enrichment.companies
+  result.companies = toUiCompanies(enrichment.companies)
+  result.candidatePool = enrichment.companies
+  result.shortlist = enrichment.companies.slice(0, getModeLimits(mode).maxVerifications)
+  result.metadata.verificationCalls = [
+    ...(result.metadata.verificationCalls || []),
+    ...enrichment.verificationCalls
+  ]
+  result.metadata.enrichmentCalls = enrichment.enrichmentCalls
+
+  return result
+}
+
 function normalizeWorkspace({ payload, mode, aiJson, aiResult }) {
-  const companies = Array.isArray(aiJson?.companies)
-    ? aiJson.companies.map((company, index) => normalizeCompany(company, index, payload.country))
+  const groundedCandidates = collectCompanyCandidates(aiJson, aiResult?.toolCalls)
+    .filter((candidate) => candidate._evidenceOrigin === 'provider' && Array.isArray(candidate.evidence) && candidate.evidence.some((item) => item?.sourceUrl))
+    .filter((candidate) => matchesTargetCountry(payload.country, [candidate.address, candidate.reason, candidate.description].filter(Boolean).join(' ')))
+  const rawCompanies = dedupeCompanyCandidates(groundedCandidates)
+    .filter((company) => isLikelyBuyerCandidate(company))
+  const companies = rawCompanies.length
+    ? rawCompanies.map((company, index) => normalizeCompany(company, index, payload.country))
     : []
   const metadata = buildAiMetadata(aiResult)
+  if (companies.length === 0) {
+    metadata.status = 'needs_review'
+    metadata.error = metadata.error || {
+      code: 'no_grounded_company_evidence',
+      message: 'No company was supported by a successful public provider result.'
+    }
+  }
   const uiCompanies = toUiCompanies(companies)
 
   return {
-    status: aiResult.status || 'completed',
+    status: companies.length > 0 ? (aiResult.status || 'completed') : 'needs_review',
     partial: Boolean(aiResult.partial),
     workspace: {
       id: createId('workspace'),
-      status: aiResult.status || 'completed',
+      status: companies.length > 0 ? (aiResult.status || 'completed') : 'needs_review',
       industry: normalizeText(payload.industry),
       country: normalizeText(payload.country),
       keywords: normalizeStringArray(payload.keywords),
@@ -229,7 +328,8 @@ export function createLeadFinderService({
   aiTimeoutMs = 0,
   maxTokens = 0,
   maxToolCalls = 0,
-  toolTimeoutMs = 0
+  toolTimeoutMs = 0,
+  companyEnrichmentService
 } = {}) {
   if (!aiAgent || typeof aiAgent.executeTask !== 'function') {
     throw new Error('createLeadFinderService requires an aiAgent with executeTask.')
@@ -266,6 +366,9 @@ export function createLeadFinderService({
       const effectiveMaxIterations = maxIterationsCap > 0
         ? Math.min(limits.maxIterations, maxIterationsCap)
         : limits.maxIterations
+      const effectiveMaxToolCalls = maxToolCalls > 0
+        ? Math.min(limits.maxToolCalls, maxToolCalls)
+        : limits.maxToolCalls
 
       let aiResult
 
@@ -286,7 +389,7 @@ export function createLeadFinderService({
           deadlineMs: requestBudgetMs,
           timeoutMs: aiTimeoutMs,
           maxTokens,
-          maxToolCalls,
+          maxToolCalls: effectiveMaxToolCalls,
           toolTimeoutMs
         })
       } catch (error) {
@@ -317,15 +420,15 @@ export function createLeadFinderService({
           }
         }
 
-        return normalizeWorkspace({
+        return enrichWorkspaceResult(normalizeWorkspace({
           payload: { ...payload, industry, keywords },
           mode,
           aiJson: buildPartialLeadFinderJson(partialAiResult.toolCalls),
           aiResult: partialAiResult
-        })
+        }), companyEnrichmentService, { ...payload, industry, keywords }, mode)
       }
 
-      return normalizeWorkspace({
+      return enrichWorkspaceResult(normalizeWorkspace({
         payload: { ...payload, industry, keywords },
         mode,
         aiJson: readAiJson(aiResult),
@@ -336,7 +439,7 @@ export function createLeadFinderService({
             rendered: systemPrompt
           }
         }
-      })
+      }), companyEnrichmentService, { ...payload, industry, keywords }, mode)
     }
   }
 }

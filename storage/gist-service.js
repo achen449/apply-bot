@@ -4,6 +4,7 @@
  */
 
 import { Octokit } from '@octokit/rest';
+import { calculateResearchRunExpiry, normalizeStoredResearchRun, pruneResearchRuns } from '../server/modules/leads/shared/research-run-contract.js'
 
 const GIST_SCHEMA = {
   researchRuns: [],
@@ -52,6 +53,56 @@ class GistService {
     this.filename = filename || 'apply-bot-data.json';
     this.octokit = new Octokit({ auth: token });
     this.cache = null;
+    this.etag = '';
+    this.writeQueue = Promise.resolve();
+  }
+
+  async withWriteLock(operation) {
+    const previous = this.writeQueue;
+    let release;
+    this.writeQueue = new Promise((resolve) => { release = resolve });
+    await previous;
+
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
+  isConflictError(error) {
+    return [409, 412].includes(Number(error?.status));
+  }
+
+  async updateDataWithRetry(mutator, maxAttempts = 3) {
+    const configuration = this.getConfigurationStatus();
+    if (!configuration.configured) {
+      const error = new Error('GIST_ID and GITHUB_GIST_TOKEN are required for Gist storage.');
+      error.code = 'missing_env';
+      error.missingEnvVars = configuration.missingEnvVars;
+      throw error;
+    }
+
+    return this.withWriteLock(async () => {
+      let lastError;
+
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        const current = await this.fetchGist();
+        const next = normalizeGistData(await mutator(current));
+
+        try {
+          await this.updateGist(next, { ifMatch: this.etag });
+          return next;
+        } catch (error) {
+          lastError = error;
+          if (!this.isConflictError(error) || attempt === maxAttempts - 1) {
+            throw error;
+          }
+        }
+      }
+
+      throw lastError || new Error('Gist update failed after retries.');
+    });
   }
 
   /**
@@ -60,17 +111,19 @@ class GistService {
    */
   async fetchGist() {
     try {
-      const { data } = await this.octokit.gists.get({
+      const response = await this.octokit.gists.get({
         gist_id: this.gistId
       });
+      const { data } = response;
 
       const filename = data.files[this.filename] ? this.filename : Object.keys(data.files)[0];
-      const content = data.files[filename].content;
+      const content = data.files[filename]?.content || '';
       this.cache = normalizeGistData(JSON.parse(content));
+      this.etag = response.headers?.etag || response.headers?.ETag || '';
 
       return this.cache;
     } catch (error) {
-      console.error('Error fetching Gist:', error.message);
+      console.error('Error fetching Gist:', error.code || error.status || 'gist_request_failed');
       throw error;
     }
   }
@@ -100,6 +153,19 @@ class GistService {
     }
 
     const data = await this.fetchGist();
+    const normalizedResearchRuns = data.researchRuns.map(normalizeStoredResearchRun)
+    const activeResearchRuns = pruneResearchRuns(normalizedResearchRuns)
+    const normalizedData = {
+      ...data,
+      researchRuns: activeResearchRuns
+    }
+    const needsRepair = JSON.stringify(normalizedData.researchRuns) !== JSON.stringify(data.researchRuns)
+    const finalData = needsRepair
+      ? await this.updateDataWithRetry((current) => ({
+          ...current,
+          researchRuns: pruneResearchRuns(current.researchRuns.map(normalizeStoredResearchRun))
+        }))
+      : normalizedData
 
     return {
       storage: 'gist',
@@ -107,21 +173,37 @@ class GistService {
       fileName: this.filename,
       exists: true,
       updatedAt: null,
-      data
+      data: finalData
     };
   }
 
   async updateCustomerData(patch) {
-    const current = await this.readCustomerData();
-    const nextData = {
-      ...current.data,
-      ...patch
-    };
-
-    await this.updateGist(nextData);
+    const nextData = await this.updateDataWithRetry((current) => ({
+      ...current,
+      ...(patch || {})
+    }));
 
     return {
-      ...current,
+      storage: 'gist',
+      gistId: this.gistId,
+      fileName: this.filename,
+      exists: true,
+      updatedAt: new Date().toISOString(),
+      data: nextData
+    };
+  }
+
+  async mutateCustomerData(mutator) {
+    if (typeof mutator !== 'function') {
+      throw new TypeError('mutateCustomerData requires a function.');
+    }
+
+    const nextData = await this.updateDataWithRetry((current) => mutator(current));
+    return {
+      storage: 'gist',
+      gistId: this.gistId,
+      fileName: this.filename,
+      exists: true,
       updatedAt: new Date().toISOString(),
       data: nextData
     };
@@ -132,23 +214,26 @@ class GistService {
    * @param {Object} data - Data to save
    * @returns {Promise<Object>} Updated Gist response
    */
-  async updateGist(data) {
+  async updateGist(data, { ifMatch = this.etag } = {}) {
     try {
       const content = JSON.stringify(normalizeGistData(data), null, 2);
 
-      const { data: responseData } = await this.octokit.gists.update({
+      const response = await this.octokit.gists.update({
         gist_id: this.gistId,
         files: {
           [this.filename]: {
             content
           }
-        }
+        },
+        ...(ifMatch ? { headers: { 'If-Match': ifMatch } } : {})
       });
+      const { data: responseData } = response;
 
       this.cache = normalizeGistData(data);
+      this.etag = response.headers?.etag || response.headers?.ETag || this.etag;
       return responseData;
     } catch (error) {
-      console.error('Error updating Gist:', error.message);
+      console.error('Error updating Gist:', error.code || error.status || 'gist_update_failed');
       throw error;
     }
   }
@@ -172,11 +257,10 @@ class GistService {
    * @returns {Promise<void>}
    */
   async setSearchCache(key, value) {
-    if (!this.cache) {
-      await this.fetchGist();
-    }
-    this.cache.searchCache[key] = value;
-    await this.updateGist(this.cache);
+    await this.updateDataWithRetry((current) => ({
+      ...current,
+      searchCache: { ...current.searchCache, [key]: value }
+    }));
   }
 
   /**
@@ -198,11 +282,10 @@ class GistService {
    * @returns {Promise<void>}
    */
   async setMapCache(key, value) {
-    if (!this.cache) {
-      await this.fetchGist();
-    }
-    this.cache.mapVerificationCache[key] = value;
-    await this.updateGist(this.cache);
+    await this.updateDataWithRetry((current) => ({
+      ...current,
+      mapVerificationCache: { ...current.mapVerificationCache, [key]: value }
+    }));
   }
 
   /**
@@ -211,19 +294,22 @@ class GistService {
    * @returns {Promise<void>}
    */
   async saveResearchRun(run) {
-    if (!this.cache) {
-      await this.fetchGist();
-    }
-
     const timestamp = new Date().toISOString();
-    const runWithTimestamp = {
+    const runWithTimestamp = normalizeStoredResearchRun({
       ...run,
       timestamp,
-      id: run.id || `run_${Date.now()}`
-    };
+      id: run.id || `run_${Date.now()}`,
+      createdAt: run.createdAt || timestamp,
+      expiresAt: run.expiresAt || calculateResearchRunExpiry(run.createdAt || timestamp)
+    });
 
-    this.cache.researchRuns.push(runWithTimestamp);
-    await this.updateGist(this.cache);
+    await this.updateDataWithRetry((current) => ({
+      ...current,
+      researchRuns: pruneResearchRuns([
+        ...current.researchRuns.map(normalizeStoredResearchRun),
+        runWithTimestamp
+      ])
+    }));
   }
 
   /**
@@ -250,16 +336,15 @@ class GistService {
    * @returns {Promise<void>}
    */
   async savePrompt(promptType, content) {
-    if (!this.cache) {
-      await this.fetchGist();
-    }
-
-    if (!this.cache.prompts.hasOwnProperty(promptType)) {
+    const current = this.cache || await this.fetchGist();
+    if (!current.prompts.hasOwnProperty(promptType)) {
       throw new Error(`Invalid prompt type: ${promptType}. Valid types: ${Object.keys(GIST_SCHEMA.prompts).join(', ')}`);
     }
 
-    this.cache.prompts[promptType] = content;
-    await this.updateGist(this.cache);
+    await this.updateDataWithRetry((latest) => ({
+      ...latest,
+      prompts: { ...latest.prompts, [promptType]: content }
+    }));
   }
 
   /**
@@ -268,16 +353,15 @@ class GistService {
    * @returns {Promise<void>}
    */
   async deletePrompt(promptType) {
-    if (!this.cache) {
-      await this.fetchGist();
-    }
-
-    if (!this.cache.prompts.hasOwnProperty(promptType)) {
+    const current = this.cache || await this.fetchGist();
+    if (!current.prompts.hasOwnProperty(promptType)) {
       throw new Error(`Invalid prompt type: ${promptType}. Valid types: ${Object.keys(GIST_SCHEMA.prompts).join(', ')}`);
     }
 
-    this.cache.prompts[promptType] = '';
-    await this.updateGist(this.cache);
+    await this.updateDataWithRetry((latest) => ({
+      ...latest,
+      prompts: { ...latest.prompts, [promptType]: '' }
+    }));
   }
 
   /**

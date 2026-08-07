@@ -1,5 +1,5 @@
 import { FormEvent, useState } from 'react'
-import { Building2, Download, ExternalLink, Globe2, Loader2, MapPin, Search, Shield, AlertTriangle, CheckCircle2, Info } from 'lucide-react'
+import { Building2, Download, ExternalLink, Globe2, Loader2, Mail, MapPin, Phone, Search, Shield, AlertTriangle, CheckCircle2, Info } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 
@@ -13,6 +13,13 @@ interface OSINTReport {
   companyName: string
   website?: string
   address?: string
+  phone?: string
+  contactEmails?: string[]
+  map?: {
+    verified?: boolean
+    placeId?: string
+    sourceUrl?: string
+  } | null
   capturedAt: string
 
   // 基本信息
@@ -27,6 +34,8 @@ interface OSINTReport {
   // 在线存在
   onlinePresence?: {
     officialWebsite?: string
+    publicPhone?: string
+    publicEmails?: string[]
     socialMedia?: {
       platform: string
       url: string
@@ -162,6 +171,15 @@ function OSINTReportCard({ report }: { report: OSINTReport }) {
                   <span>{report.address}</span>
                 </div>
               )}
+              <div className="flex items-center gap-2">
+                <Phone className="h-4 w-4 flex-shrink-0" />
+                {report.phone ? <a href={`tel:${report.phone}`} className="hover:text-primary-600">{report.phone}</a> : <span>未发现公开电话</span>}
+              </div>
+              <div className="flex items-start gap-2">
+                <Mail className="mt-0.5 h-4 w-4 flex-shrink-0" />
+                {report.contactEmails?.length ? <div className="flex flex-wrap gap-2">{report.contactEmails.map((email) => <a key={email} href={`mailto:${email}`} className="break-all text-primary-600 hover:underline">{email}</a>)}</div> : <span>未发现公开邮箱</span>}
+              </div>
+              <div className="text-xs text-gray-500 dark:text-gray-400">Google Maps：{report.map?.verified ? `已验证${report.map.placeId ? ` · ${report.map.placeId}` : ''}` : '待复核'}</div>
             </div>
           </div>
 

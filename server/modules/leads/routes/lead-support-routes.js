@@ -1,4 +1,5 @@
 import express from 'express'
+import { createResearchRun, getPartStatus } from '../shared/research-run-contract.js'
 
 function hasText(value) {
   return typeof value === 'string' && value.trim().length > 0
@@ -46,8 +47,131 @@ function sendServiceError(res, error, fallbackMessage) {
   })
 }
 
+function countCallFailures(calls = []) {
+  return calls.filter((call) => call?.ok === false || call?.error).length
+}
+
+function buildSimilarCompanyParts(result = {}, queryInput = {}) {
+  const metadata = result.metadata || {}
+  const searchCalls = metadata.searchCalls || []
+  const verificationCalls = metadata.verificationCalls || []
+  const enrichmentCalls = metadata.enrichmentCalls || []
+
+  return [
+    {
+      workflow: 'similar-company',
+      part: 'discovery',
+      title: 'Similar-company discovery',
+      status: getPartStatus({
+        attempted: searchCalls.length,
+        succeeded: searchCalls.filter((call) => call.ok !== false).length,
+        failed: countCallFailures(searchCalls),
+        empty: searchCalls.length === 0
+      }),
+      prompt: metadata.prompt || null,
+      searchCalls,
+      queryInput
+    },
+    {
+      workflow: 'similar-company',
+      part: 'map-verification',
+      title: 'Google Maps verification',
+      status: getPartStatus({
+        attempted: verificationCalls.length,
+        succeeded: verificationCalls.filter((call) => call.ok !== false).length,
+        failed: countCallFailures(verificationCalls),
+        empty: verificationCalls.length === 0
+      }),
+      verificationCalls
+    },
+    {
+      workflow: 'similar-company',
+      part: 'contact-enrichment',
+      title: 'Official website contact enrichment',
+      status: getPartStatus({
+        attempted: enrichmentCalls.length,
+        succeeded: enrichmentCalls.filter((call) => ['completed', 'no_public_email'].includes(call.status)).length,
+        failed: enrichmentCalls.filter((call) => ['unavailable', 'enrichment_failed'].includes(call.status)).length,
+        empty: enrichmentCalls.length === 0
+      }),
+      enrichmentCalls
+    },
+    {
+      workflow: 'similar-company',
+      part: 'report',
+      title: 'Similar-company report',
+      status: result.status || metadata.status || 'needs_review',
+      results: result.results || [],
+      errors: result.error ? [result.error] : []
+    }
+  ]
+}
+
+function buildGoogleMapsParts({ query, location, results, searchCall, enrichmentCalls = [], status }) {
+  return [
+    {
+      workflow: 'google-maps',
+      part: 'discovery',
+      title: 'Google Maps place discovery',
+      status: searchCall.ok && results.length > 0 ? 'completed' : 'needs_review',
+      searchCalls: [searchCall],
+      queryInput: { query, location }
+    },
+    {
+      workflow: 'google-maps',
+      part: 'map-verification',
+      title: 'Map result verification',
+      status: results.length > 0 ? 'completed' : 'needs_review',
+      results
+    },
+    {
+      workflow: 'google-maps',
+      part: 'contact-enrichment',
+      title: 'Official website contact enrichment',
+      status: enrichmentCalls.length === 0
+        ? 'completed'
+        : enrichmentCalls.some((call) => call.status === 'unavailable' || call.status === 'enrichment_failed')
+          ? (enrichmentCalls.some((call) => call.status === 'completed' || call.status === 'no_public_email') ? 'partial' : 'failed')
+          : 'completed',
+      enrichmentCalls
+    },
+    {
+      workflow: 'google-maps',
+      part: 'report',
+      title: 'Google Maps lead report',
+      status,
+      results
+    }
+  ]
+}
+
 function normalizeText(value) {
   return typeof value === 'string' ? value.trim().toLowerCase() : ''
+}
+
+function normalizedCompanyName(value) {
+  return normalizeText(value)
+    .replace(/\b(incorporated|inc|corporation|corp|limited|ltd|llc|gmbh|ag|bv|plc|company|co)\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function isGenericCompanyName(value) {
+  const tokens = normalizedCompanyName(value).split(' ').filter(Boolean)
+  const genericTokens = new Set(['solar', 'energy', 'power', 'systems', 'system', 'connector', 'connectors', 'technology', 'technologies', 'solutions', 'global', 'industrial', 'electric', 'equipment', 'group'])
+  return tokens.length <= 1 || tokens.every((token) => genericTokens.has(token))
+}
+
+function mapNameMatches(expectedName, actualName) {
+  const expected = normalizedCompanyName(expectedName)
+  const actual = normalizedCompanyName(actualName)
+  if (!expected || !actual) return { exact: false, strong: false }
+  if (expected === actual) return { exact: true, strong: true }
+  const expectedTokens = new Set(expected.split(' ').filter(Boolean))
+  const actualTokens = new Set(actual.split(' ').filter(Boolean))
+  const overlap = [...expectedTokens].filter((token) => actualTokens.has(token)).length
+  return { exact: false, strong: overlap >= 2 && overlap / Math.max(expectedTokens.size, actualTokens.size) >= 0.75 }
 }
 
 function buildGoogleMapsMatch(candidate = {}) {
@@ -83,7 +207,15 @@ async function verifyCompanyWithMaps(googleMapsSearchService, company = {}) {
     location: companyName ? address : '',
     filters: { maxResults: 5, requireOperational: false }
   })
-  const candidate = response.results?.[0] || null
+  const candidates = Array.isArray(response.results) ? response.results : []
+  const candidate = candidates
+    .map((item) => {
+      const nameMatch = mapNameMatches(companyName, item.title || item.name)
+      const candidateAddress = normalizeText(item.address || item.snippet)
+      const addressMatch = Boolean(address && candidateAddress && (candidateAddress.includes(normalizeText(address)) || normalizeText(address).includes(candidateAddress)))
+      return { item, score: (nameMatch.exact ? 0.6 : nameMatch.strong ? 0.4 : 0) + (addressMatch ? 0.35 : 0) + (item.googlePlaceId || item.placeId ? 0.05 : 0) }
+    })
+    .sort((left, right) => right.score - left.score)[0]?.item || null
 
   if (!candidate) {
     return { verified: false, match: null, message: 'No matching Google Maps place was found.' }
@@ -94,9 +226,13 @@ async function verifyCompanyWithMaps(googleMapsSearchService, company = {}) {
   const actualName = normalizeText(match.name)
   const expectedAddress = normalizeText(address)
   const actualAddress = normalizeText(match.address)
-  const nameMatches = !expectedName || actualName.includes(expectedName) || expectedName.includes(actualName)
-  const addressMatches = !expectedAddress || actualAddress.includes(expectedAddress) || expectedAddress.includes(actualAddress)
-  const verified = Boolean(match.placeId && (nameMatches || addressMatches))
+  const nameMatch = mapNameMatches(expectedName, actualName)
+  const addressMatches = Boolean(expectedAddress && actualAddress && (actualAddress.includes(expectedAddress) || expectedAddress.includes(actualAddress)))
+  const verified = Boolean(
+    match.placeId
+      && nameMatch.strong
+      && (addressMatches || (nameMatch.exact && !isGenericCompanyName(expectedName) && !expectedAddress))
+  )
 
   return {
     verified,
@@ -111,9 +247,54 @@ export function createLeadSupportRouter({
   googleMapsSearchService,
   researchRunsStorage,
   gistCustomerDataService,
-  providerAvailability
+  providerAvailability,
+  websiteContactEnrichmentService
 }) {
   const router = express.Router()
+
+  async function persistResearchRun(run) {
+    if (!researchRunsStorage || typeof researchRunsStorage.save !== 'function') {
+      return { saved: false, reason: 'research_run_storage_unavailable' }
+    }
+    try {
+      await researchRunsStorage.save(run)
+      return { saved: true }
+    } catch (error) {
+      console.error('Failed to persist support research run:', error?.code || error?.status || 'persistence_failed')
+      return { saved: false, reason: error?.code || 'research_run_persist_failed' }
+    }
+  }
+
+  async function enrichMapResultContact(result) {
+    const website = result?.url || result?.website || ''
+    if (!websiteContactEnrichmentService || typeof websiteContactEnrichmentService.enrich !== 'function' || !hasText(website)) {
+      return result
+    }
+
+    try {
+      const contact = await websiteContactEnrichmentService.enrich({ website })
+      return {
+        ...result,
+        emails: contact.contactEmails || [],
+        emailDetails: contact.emails || [],
+        contactPages: contact.contactPages || [],
+        contactEmailStatus: contact.status,
+        phone: result.phone || contact.phone || '',
+        evidence: [
+          ...(Array.isArray(result.evidence) ? result.evidence : []),
+          ...(Array.isArray(contact.evidence) ? contact.evidence : [])
+        ]
+      }
+    } catch (error) {
+      return {
+        ...result,
+        emails: [],
+        emailDetails: [],
+        contactEmailStatus: 'enrichment_failed',
+        enrichmentError: 'website_contact_enrichment_failed'
+      }
+    }
+  }
 
   router.post('/google-maps/search', async (req, res) => {
     try {
@@ -127,8 +308,58 @@ export function createLeadSupportRouter({
         return res.status(400).json({ success: false, code: 'invalid_payload', error: 'query is required' })
       }
 
-      const result = await googleMapsSearchService.search({ query, location, filters })
-      return res.json(result)
+      const safeFilters = filters && typeof filters === 'object' && !Array.isArray(filters) ? filters : {}
+      const result = await googleMapsSearchService.search({ query, location, filters: safeFilters })
+      const enrichedResults = safeFilters.includeEmails
+        ? await Promise.all((result.results || []).slice(0, 10).map(enrichMapResultContact))
+        : result.results || []
+
+      const enrichmentCalls = safeFilters.includeEmails
+        ? enrichedResults.map((item) => ({
+            companyName: item.title || item.name || '',
+            website: item.url || item.website || '',
+            status: item.contactEmailStatus || 'not_requested',
+            emailCount: item.emails?.length || 0,
+            contactPages: item.contactPages || []
+          }))
+        : []
+      const searchCall = {
+        provider: 'google-maps',
+        query: result.query || [query, location].filter(Boolean).join(' in '),
+        ok: true,
+        resultCount: enrichedResults.length
+      }
+      const runStatus = enrichedResults.length === 0
+        ? 'needs_review'
+        : enrichmentCalls.some((call) => ['unavailable', 'enrichment_failed'].includes(call.status))
+          ? (enrichmentCalls.some((call) => ['completed', 'no_public_email'].includes(call.status)) ? 'partial' : 'failed')
+          : 'completed'
+      const run = createResearchRun({
+        id: `google-maps-${Date.now()}`,
+        workflow: 'google-maps',
+        title: `Google Maps: ${query}`,
+        status: runStatus,
+        part: 'report',
+        queryInput: { query, location, filters: safeFilters },
+        searchCalls: [searchCall],
+        results: enrichedResults,
+        parts: buildGoogleMapsParts({ query, location, results: enrichedResults, searchCall, enrichmentCalls, status: runStatus })
+      })
+      const persistence = await persistResearchRun(run)
+
+      return res.json({
+        ...result,
+        results: enrichedResults,
+        count: enrichedResults.length,
+        enrichment: safeFilters.includeEmails ? {
+          requested: true,
+          attempted: enrichedResults.length,
+          publicEmailCount: enrichedResults.filter((item) => item.emails?.length).length
+        } : { requested: false }
+        ,runId: run.id,
+        researchRun: run,
+        persistence
+      })
     } catch (error) {
       console.error('Error searching Google Maps:', error)
       return sendServiceError(res, error, 'Failed to search Google Maps')
@@ -141,12 +372,64 @@ export function createLeadSupportRouter({
         return sendMissingEnvResponse(res, 'GOOGLE_MAPS_API_KEY is required for Google Maps verification.', providerAvailability.googleMaps.missingEnvVars)
       }
 
-      const { companyName = '', address = '' } = req.body || {}
+      const { companyName = '', address = '', includeEmails = true } = req.body || {}
       if (!hasText(companyName) && !hasText(address)) {
         return res.status(400).json({ success: false, code: 'invalid_payload', error: 'companyName or address is required' })
       }
 
-      return res.json(await verifyCompanyWithMaps(googleMapsSearchService, { companyName, address }))
+      const result = await verifyCompanyWithMaps(googleMapsSearchService, { companyName, address })
+      if (result.match && includeEmails) {
+        result.match = await enrichMapResultContact(result.match)
+      }
+      const verificationCall = {
+        provider: 'google-maps',
+        companyName,
+        address,
+        ok: Boolean(result.match),
+        verified: Boolean(result.verified),
+        candidate: result.match,
+        error: result.verified ? null : 'map_match_needs_review'
+      }
+      const enrichmentCalls = result.match && includeEmails ? [{
+        companyName,
+        website: result.match.website || '',
+        status: result.match.contactEmailStatus || 'not_configured',
+        emailCount: result.match.emails?.length || 0,
+        contactPages: result.match.contactPages || []
+      }] : []
+      const runStatus = result.verified ? 'completed' : result.match ? 'needs_review' : 'failed'
+      const run = createResearchRun({
+        id: `google-maps-verify-${Date.now()}`,
+        workflow: 'google-maps',
+        title: `Google Maps verify: ${companyName || address}`,
+        status: runStatus,
+        part: 'map-verification',
+        queryInput: { companyName, address, includeEmails },
+        verificationCalls: [verificationCall],
+        results: result.match ? [result.match] : [],
+        parts: [
+          {
+            workflow: 'google-maps',
+            part: 'map-verification',
+            title: 'Google Maps verification',
+            status: runStatus,
+            verificationCalls: [verificationCall],
+            results: result.match ? [result.match] : []
+          },
+          {
+            workflow: 'google-maps',
+            part: 'contact-enrichment',
+            title: 'Official website contact enrichment',
+            status: enrichmentCalls[0]?.status || 'not_requested',
+            enrichmentCalls
+          }
+        ]
+      })
+      const persistence = await persistResearchRun(run)
+      result.runId = run.id
+      result.researchRun = run
+      result.persistence = persistence
+      return res.json(result)
     } catch (error) {
       console.error('Error verifying company with Google Maps:', error)
       return sendServiceError(res, error, 'Failed to verify company with Google Maps')
@@ -259,28 +542,42 @@ export function createLeadSupportRouter({
         maxResults: Math.min(toPositiveInteger(topN, 10), 8)
       })
 
-      if (researchRunsStorage && typeof researchRunsStorage.save === 'function') {
-        await researchRunsStorage.save({
-          id: `similar-company-${Date.now()}`,
-          workflow: 'similar-company',
-          title: `Similar Company: ${company.name}`,
-          createdAt: new Date().toISOString(),
-          prompt: result.metadata?.prompt || null,
-          searchCalls: result.metadata?.searchCalls || [],
-          verificationCalls: result.metadata?.verificationCalls || [],
-          sampleCompany: result.sampleCompany,
-          results: result.results || []
-        })
+      const queryInput = {
+        sampleCompany: company,
+        topN: Math.min(toPositiveInteger(topN, 10), 8)
       }
+      const run = createResearchRun({
+        id: `similar-company-${Date.now()}`,
+        workflow: 'similar-company',
+        title: `Similar Company: ${company.name}`,
+        status: result.status || result.metadata?.status || 'completed',
+        part: 'report',
+        prompt: result.metadata?.prompt || null,
+        searchCalls: result.metadata?.searchCalls || [],
+        verificationCalls: result.metadata?.verificationCalls || [],
+        enrichmentCalls: result.metadata?.enrichmentCalls || [],
+        sampleCompany: result.sampleCompany || company,
+        queryInput,
+        results: result.results || [],
+        errors: result.error ? [result.error] : [],
+        parts: buildSimilarCompanyParts(result, queryInput)
+      })
+
+      const persistence = await persistResearchRun(run)
 
       return res.json({
         success: true,
         configured: true,
-        runId: result.runId || null,
+        status: run.status,
+        partial: Boolean(result.partial),
+        runId: run.id,
+        researchRun: run,
         recommendations: result.results || [],
         results: result.results || [],
         companies: result.companies || [],
-        metadata: result.metadata || {}
+        metadata: result.metadata || {},
+        error: result.error || null,
+        persistence
       })
     } catch (error) {
       console.error('Error finding similar companies:', error)

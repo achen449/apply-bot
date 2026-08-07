@@ -112,15 +112,36 @@ function normalizeResearchRun({ payload, mode, aiJson, aiResult }) {
     address: normalizeText(payload.address)
   }
 
-  const evidence = normalizeEvidence(aiJson?.evidence, subject)
-  const verification = normalizeVerification(aiJson?.verification)
-  const report = normalizeReport(aiJson?.report)
   const metadata = buildAiMetadata(aiResult)
+  const evidence = filterEvidenceToProviderSources(
+    normalizeEvidence(aiJson?.evidence, subject),
+    aiResult?.toolCalls
+  )
+  const evidenceIds = new Set(evidence.map((item) => item.evidenceId))
+  const report = filterReportByEvidence(normalizeReport(aiJson?.report), evidenceIds)
+  const entityEvidence = evidence.filter((item) => normalizeText(item.title).toLowerCase().includes(normalizeText(subject.companyName).toLowerCase()))
+  const mapsVerified = metadata.verificationCalls.some((call) => call.ok !== false && call.verified)
+  const verification = {
+    entityStatus: entityEvidence.length ? 'partially_verified' : 'unverified',
+    officialWebsiteStatus: evidence.some((item) => hostOf(item.sourceUrl) === hostOf(subject.website)) ? 'partially_verified' : 'unverified',
+    addressStatus: mapsVerified ? 'partially_verified' : 'unverified',
+    publicContactStatus: 'unverified',
+    mapsMatchStatus: mapsVerified ? 'partially_verified' : 'unverified',
+    researchStatus: evidence.length ? (aiResult?.partial ? 'partial' : 'completed') : 'needs_review',
+    notes: ''
+  }
+  if (!evidence.length) {
+    metadata.status = 'needs_review'
+    metadata.error = metadata.error || {
+      code: 'no_grounded_osint_evidence',
+      message: 'AI output contained no evidence matching successful provider results.'
+    }
+  }
 
   return {
     researchRun: {
       id: createId('research'),
-      status: normalizeText(aiJson?.status, 'completed'),
+      status: evidence.length ? normalizeText(aiJson?.status, aiResult?.partial ? 'partial' : 'completed') : 'needs_review',
       subject,
       evidence,
       verification,
@@ -138,7 +159,132 @@ function normalizeResearchRun({ payload, mode, aiJson, aiResult }) {
   }
 }
 
-export function createOsintService({ aiAgent, tools = [], promptStorage, gistStorage, prompt = OSINT_PROMPT } = {}) {
+function hostOf(value) {
+  try {
+    return new URL(value).hostname.replace(/^www\./i, '').toLowerCase()
+  } catch {
+    return ''
+  }
+}
+
+function collectProviderUrls(toolCalls = []) {
+  const urls = new Set()
+  for (const call of Array.isArray(toolCalls) ? toolCalls : []) {
+    if (call?.result?.ok === false) continue
+    for (const item of call.result?.results || []) {
+      const url = item.url || item.website
+      if (url) urls.add(url)
+    }
+    for (const item of call.result?.candidates || []) {
+      const url = item.url || item.website
+      if (url) urls.add(url)
+    }
+  }
+  return urls
+}
+
+function filterEvidenceToProviderSources(evidence, toolCalls) {
+  const providerUrls = collectProviderUrls(toolCalls)
+  return evidence.filter((item) => {
+    if (!item.sourceUrl) return false
+    const sourceHost = hostOf(item.sourceUrl)
+    return [...providerUrls].some((url) => url === item.sourceUrl || (sourceHost && hostOf(url) === sourceHost))
+  })
+}
+
+function filterReportByEvidence(report, evidenceIds) {
+  const keepRefs = (refs) => normalizeStringArray(refs).filter((ref) => evidenceIds.has(ref))
+  return {
+    ...report,
+    overview: {
+      ...report.overview,
+      evidenceRefs: keepRefs(report.overview?.evidenceRefs),
+      officialWebsite: keepRefs(report.overview?.evidenceRefs).length ? report.overview.officialWebsite : ''
+    },
+    products: report.products.filter((item) => keepRefs(item.evidenceRefs).length).map((item) => ({ ...item, evidenceRefs: keepRefs(item.evidenceRefs) })),
+    targetApplications: report.targetApplications.filter((item) => keepRefs(item.evidenceRefs).length).map((item) => ({ ...item, evidenceRefs: keepRefs(item.evidenceRefs) })),
+    findings: report.findings.filter((item) => keepRefs(item.evidenceRefs).length).map((item) => ({ ...item, evidenceRefs: keepRefs(item.evidenceRefs) })),
+    riskFlags: report.riskFlags.filter((item) => keepRefs(item.evidenceRefs).length).map((item) => ({ ...item, evidenceRefs: keepRefs(item.evidenceRefs) })),
+    publicContacts: []
+  }
+}
+
+function mergeOsintEnrichment(result, enrichment, companyName) {
+  const company = enrichment?.companies?.[0]
+  if (!company) {
+    return result
+  }
+
+  const researchRun = result.researchRun
+  researchRun.subject = {
+    ...researchRun.subject,
+    companyName: company.name || company.companyName || companyName,
+    website: company.website || researchRun.subject.website,
+    address: company.address || researchRun.subject.address,
+    phone: company.phone || '',
+    contactEmails: company.contactEmails || [],
+    map: company.map || null,
+    mapVerified: Boolean(company.mapVerified)
+  }
+  const enrichmentEvidence = (company.evidence || []).map((item, index) => ({
+    evidenceId: item.evidenceId || `enrichment-evidence-${index + 1}`,
+    provider: item.type === 'google_maps' ? 'google-maps' : 'official-website',
+    sourceType: item.type === 'google_maps' ? 'map' : 'web',
+    sourceUrl: item.sourceUrl || '',
+    title: item.title || '',
+    snippet: item.snippet || item.value || '',
+    queryLabel: 'contact-enrichment',
+    trustTier: item.type === 'google_maps' ? 'official-map' : 'official-website',
+    timestamp: item.observedAt || new Date().toISOString()
+  }))
+  researchRun.evidence = [
+    ...researchRun.evidence,
+    ...enrichmentEvidence
+  ]
+  const contactEvidenceRefs = enrichmentEvidence.map((item) => item.evidenceId).filter(Boolean)
+  researchRun.report = {
+    ...researchRun.report,
+    overview: {
+      ...researchRun.report.overview,
+      canonicalName: researchRun.report.overview.canonicalName || company.name || companyName,
+      officialWebsite: company.website || researchRun.report.overview.officialWebsite,
+      headquartersAddressRef: company.address ? 'enrichment-address-1' : researchRun.report.overview.headquartersAddressRef
+    },
+    publicContacts: [
+      ...researchRun.report.publicContacts,
+      ...(company.phone && company.mapVerified ? [{ type: 'public_phone', value: company.phone, context: 'Google Maps or official website', evidenceRefs: contactEvidenceRefs }] : []),
+      ...(company.contactEmails || []).map((email) => ({ type: 'public_email', value: email, context: 'Official website contact page', evidenceRefs: contactEvidenceRefs }))
+    ]
+  }
+  researchRun.verification = {
+    ...researchRun.verification,
+    addressStatus: company.mapVerified ? 'verified' : researchRun.verification.addressStatus,
+    officialWebsiteStatus: ['completed', 'no_public_email'].includes(company.contactEmailStatus) ? 'partially_verified' : researchRun.verification.officialWebsiteStatus,
+    publicContactStatus: company.contactEmails?.length || (company.mapVerified && company.phone) ? 'partially_verified' : researchRun.verification.publicContactStatus,
+    mapsMatchStatus: company.mapVerified ? 'verified' : researchRun.verification.mapsMatchStatus,
+    researchStatus: company.dataQuality?.needsReview ? 'partial' : researchRun.verification.researchStatus
+  }
+  result.metadata = {
+    ...result.metadata,
+    enrichmentCalls: enrichment.enrichmentCalls || [],
+    verificationCalls: [
+      ...(result.metadata.verificationCalls || []),
+      ...(enrichment.verificationCalls || [])
+    ]
+  }
+
+  return result
+}
+
+export function createOsintService({
+  aiAgent,
+  tools = [],
+  promptStorage,
+  gistStorage,
+  prompt = OSINT_PROMPT,
+  companyEnrichmentService,
+  persistResearchRun = true
+} = {}) {
   if (!aiAgent || typeof aiAgent.executeTask !== 'function') {
     throw new Error('createOsintService requires an aiAgent with executeTask.')
   }
@@ -189,7 +335,7 @@ export function createOsintService({ aiAgent, tools = [], promptStorage, gistSto
         temperature: 0.2
       })
 
-      const result = normalizeResearchRun({
+      let result = normalizeResearchRun({
         payload: {
           companyName,
           website: normalizeText(payload.website),
@@ -209,11 +355,28 @@ export function createOsintService({ aiAgent, tools = [], promptStorage, gistSto
         }
       })
 
-      if (gistStorage && typeof gistStorage.saveResearchRun === 'function') {
+      if (companyEnrichmentService && typeof companyEnrichmentService.enrichCompanies === 'function') {
+        const enrichment = await companyEnrichmentService.enrichCompanies([{
+          id: `osint-company-${Date.now()}`,
+          name: companyName,
+          companyName,
+          website: normalizeText(payload.website),
+          country: normalizeText(payload.country),
+          address: normalizeText(payload.address),
+          evidence: result.researchRun.evidence
+        }], {
+          country: normalizeText(payload.country),
+          maxResults: 1,
+          existingVerificationCalls: result.metadata.verificationCalls || []
+        })
+        result = mergeOsintEnrichment(result, enrichment, companyName)
+      }
+
+      if (persistResearchRun && gistStorage && typeof gistStorage.saveResearchRun === 'function') {
         try {
           await gistStorage.saveResearchRun(result.researchRun)
         } catch (error) {
-          console.error('Failed to save research run to Gist:', error)
+          console.error('Failed to save research run to Gist:', error?.code || error?.status || 'persistence_failed')
         }
       }
 

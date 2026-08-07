@@ -193,6 +193,10 @@ export interface GoogleMapsPlace {
   googlePrimaryType: string
   geo: GoogleMapsGeoPoint | null
   emails?: string[]
+  emailDetails?: Array<{ value: string; type?: string; sourceUrl?: string; observedAt?: string }>
+  contactPages?: string[]
+  contactEmailStatus?: string
+  evidence?: Array<{ type?: string; sourceUrl?: string; value?: string; observedAt?: string }>
 }
 
 export interface GoogleMapsSearchResult {
@@ -270,11 +274,46 @@ export interface SimilarCompanyResult {
     rawProfile: string
   }
   similarity: number
+  scores?: {
+    total?: number
+    business?: number
+    market?: number
+    scale?: number
+  }
+  verified?: boolean
+  mapVerified?: boolean
+  map?: {
+    verified?: boolean
+    placeId?: string
+    confidence?: number
+    sourceUrl?: string
+    businessStatus?: string
+  } | null
+  address?: string
+  phone?: string
+  contactEmails?: string[]
+  contactPages?: string[]
+  evidence?: Array<{
+    type?: string
+    sourceUrl?: string
+    title?: string
+    snippet?: string
+    value?: string
+  }>
+  dataQuality?: {
+    hasOfficialWebsite?: boolean
+    hasMapEvidence?: boolean
+    hasPublicPhone?: boolean
+    hasPublicEmail?: boolean
+    needsReview?: boolean
+  } | null
 }
 
 export interface SimilarCompanyResponse {
   success?: boolean
   configured?: boolean
+  status?: string
+  partial?: boolean
   runId?: string | null
   recommendations?: SimilarCompanyResult[]
   results: SimilarCompanyResult[]
@@ -300,10 +339,11 @@ export interface SimilarCompanyResponse {
     parsedJson?: unknown
     iterations?: number
   }
+  error?: string | Record<string, unknown> | null
 }
 
 export async function findSimilarCompanies(company: SimilarCompanyInput, topN = 10): Promise<SimilarCompanyResponse> {
-  return requestJson<{ results: SimilarCompanyResult[] }>('/api/companies/find-similar', {
+  return requestJson<SimilarCompanyResponse>('/api/companies/find-similar', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
@@ -315,8 +355,11 @@ export async function findSimilarCompanies(company: SimilarCompanyInput, topN = 
 export interface ResearchRunRecord {
   id: string
   workflow?: string
+  part?: string
+  status?: 'completed' | 'partial' | 'needs_review' | 'failed' | string
   title?: string
   createdAt?: string
+  expiresAt?: string
   prompt?: {
     key?: string
     rendered?: string
@@ -326,6 +369,7 @@ export interface ResearchRunRecord {
     query?: string
     ok?: boolean
     resultCount?: number
+    error?: string | Record<string, unknown> | null
   }>
   verificationCalls?: Array<{
     companyName?: string
@@ -333,14 +377,50 @@ export interface ResearchRunRecord {
     ok?: boolean
     verified?: boolean
     confidence?: number
+    candidate?: Record<string, unknown> | null
+    candidates?: Array<Record<string, unknown>>
+    error?: string | Record<string, unknown> | null
+  }>
+  enrichmentCalls?: Array<{
+    companyName?: string
+    website?: string
+    status?: string
+    emailCount?: number
+    contactPages?: string[]
+    calls?: Array<Record<string, unknown>>
   }>
   workspace?: LeadWorkspace
   sampleCompany?: SimilarCompanyInput
   queryInput?: Record<string, unknown>
+  parts?: Array<{
+    id?: string
+    workflow?: string
+    part?: string
+    status?: string
+    title?: string
+    prompt?: { key?: string; rendered?: string } | null
+    buyerQueries?: string[]
+    searchCalls?: Array<Record<string, unknown>>
+    verificationCalls?: Array<Record<string, unknown>>
+    enrichmentCalls?: Array<Record<string, unknown>>
+    results?: unknown[]
+    evidence?: unknown[]
+    report?: Record<string, unknown>
+    publicContacts?: unknown[]
+    unresolvedQuestions?: string[]
+    [key: string]: unknown
+  }>
+  results?: unknown[]
+  errors?: Array<string | Record<string, unknown>>
 }
 
-export async function fetchResearchRuns(): Promise<ResearchRunRecord[]> {
-  const data = await requestJson<{ runs?: ResearchRunRecord[] }>('/api/research-runs', undefined, 'Failed to load research runs')
+export async function fetchResearchRuns(filters: { workflow?: string; status?: string; query?: string } = {}): Promise<ResearchRunRecord[]> {
+  const params = new URLSearchParams()
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value) params.set(key, value)
+  })
+  const query = params.toString()
+  const data = await requestJson<{ runs?: ResearchRunRecord[] }>(`/api/research-runs${query ? `?${query}` : ''}`, undefined, 'Failed to load research runs')
   return data.runs ?? []
 }
 

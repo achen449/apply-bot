@@ -115,6 +115,21 @@ function PlaceResultCard({ result }: { result: GoogleMapsPlace }) {
             ) : (
               <div className="text-xs text-gray-500 dark:text-gray-500">No public email observed for this result.</div>
             )}
+            {result.contactEmailStatus ? (
+              <div className="text-xs text-gray-500 dark:text-gray-400">
+                Email status: {result.contactEmailStatus}
+              </div>
+            ) : null}
+            {result.contactPages && result.contactPages.length > 0 ? (
+              <div className="flex flex-wrap gap-2 text-xs text-gray-500 dark:text-gray-400">
+                <span>Observed on:</span>
+                {result.contactPages.map((page) => (
+                  <a key={page} href={page} target="_blank" rel="noreferrer" className="break-all text-primary-600 hover:underline">
+                    {page}
+                  </a>
+                ))}
+              </div>
+            ) : null}
           </div>
         </div>
 

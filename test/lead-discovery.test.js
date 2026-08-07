@@ -478,6 +478,48 @@ test('osint research returns structured evidence-backed fallback output without 
   assert.ok(result.researchCase.evidenceRefs.length > 0)
 })
 
+test('osint fallback keeps report usable when maps or web providers fail', async () => {
+  const service = createOsintResearchService({
+    googleMapsSearch: async () => {
+      throw new Error('places network unavailable')
+    },
+    braveSearch: async () => {
+      throw new Error('brave network unavailable')
+    },
+    tavilySearch: async () => [],
+    websiteContactEnrichment: async () => ({
+      status: 'completed',
+      emails: [{ value: 'sales@aurora.example.com', sourceUrl: 'https://aurora.example.com/contact' }],
+      phone: '+49 30 5555',
+      contactPages: ['https://aurora.example.com/contact'],
+      evidence: [
+        { type: 'public_email', value: 'sales@aurora.example.com', sourceUrl: 'https://aurora.example.com/contact' },
+        { type: 'public_phone', value: '+49 30 5555', sourceUrl: 'https://aurora.example.com/contact' }
+      ],
+      calls: [{ url: 'https://aurora.example.com/contact', ok: true }]
+    }),
+    providerAvailability: {
+      googleMaps: true,
+      brave: true,
+      tavily: true
+    }
+  })
+
+  const result = await service.research({
+    companyName: 'Aurora Industrial Systems GmbH',
+    website: 'aurora.example.com',
+    country: 'Germany'
+  })
+
+  assert.equal(result.status, 'needs_review')
+  assert.equal(result.providerAvailability.find((item) => item.provider === 'google-maps').available, false)
+  assert.match(result.unresolvedQuestions.join(' '), /google-maps failed: places network unavailable/i)
+  assert.equal(result.publicContacts.some((contact) => contact.value === 'sales@aurora.example.com'), true)
+  assert.equal(result.publicContacts.some((contact) => contact.value === '+49 30 5555'), true)
+  assert.ok(result.report.publicContacts.length >= 2)
+  assert.ok(result.report.publicContacts.every((contact) => contact.evidenceRefs.every((ref) => result.evidence.some((item) => item.evidenceId === ref))))
+})
+
 test('osint route validates input and returns stable response shape', async () => {
   const app = express()
   app.use(express.json())
@@ -935,4 +977,3 @@ test('google maps adapter and search service return a non-empty company result s
     globalThis.fetch = originalFetch
   }
 })
-

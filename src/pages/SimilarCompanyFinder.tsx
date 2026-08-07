@@ -1,5 +1,5 @@
 import { FormEvent, useState } from 'react'
-import { ExternalLink, Globe2, Loader2, Search, Sparkles } from 'lucide-react'
+import { AlertTriangle, Building2, CheckCircle2, ExternalLink, Globe2, Loader2, Mail, MapPin, Phone, Search, Sparkles } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { findSimilarCompanies, type SimilarCompanyResult } from '@/lib/leadApi'
@@ -65,6 +65,8 @@ export default function SimilarCompanyFinder() {
   const [hasSearched, setHasSearched] = useState(false)
   const [promptPreview, setPromptPreview] = useState('')
   const [queryPreview, setQueryPreview] = useState<string[]>([])
+  const [runId, setRunId] = useState('')
+  const [runStatus, setRunStatus] = useState('')
 
   async function handleSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -72,10 +74,14 @@ export default function SimilarCompanyFinder() {
     setResults([])
     setHasSearched(true)
     setIsSearching(true)
+    setRunId('')
+    setRunStatus('')
 
     try {
       const data = await findSimilarCompanies({ name, website, industry, description }, Number.parseInt(topN, 10))
-      setResults(data.results)
+      setResults(data.results || [])
+      setRunId(data.runId || '')
+      setRunStatus(data.status || '')
       setPromptPreview(data.metadata?.prompt?.rendered || '')
       setQueryPreview((data.metadata?.searchCalls || []).map((call) => call.query || '').filter(Boolean))
     } catch (searchError) {
@@ -170,6 +176,20 @@ export default function SimilarCompanyFinder() {
         </Card>
       ) : null}
 
+      {hasSearched && !isSearching && (runStatus || runId) ? (
+        <Card className="border-gray-200 shadow-sm dark:border-stone-700">
+          <CardContent className="flex flex-wrap items-center gap-3 py-4 text-sm text-stone-700 dark:text-stone-200">
+            <span className="font-semibold">流程状态：</span>
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-900 dark:bg-amber-900/30 dark:text-amber-100">
+              <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+              {runStatus === 'completed' ? '已完成' : runStatus === 'partial' ? '部分完成' : runStatus === 'needs_review' ? '待复核' : runStatus || '未记录'}
+            </span>
+            {runId ? <span className="break-all text-xs text-stone-500 dark:text-stone-400">Run: {runId}</span> : null}
+            {runId ? <a className="text-xs font-medium text-primary-700 hover:underline dark:text-primary-300" href="/logs">打开 Research Runs</a> : null}
+          </CardContent>
+        </Card>
+      ) : null}
+
       {hasSearched && !isSearching && !error && results.length === 0 ? (
         <Card className="border-gray-200 shadow-sm dark:border-stone-700">
           <CardContent className="p-6 text-sm text-gray-500 dark:text-gray-400">
@@ -198,6 +218,7 @@ export default function SimilarCompanyFinder() {
                     <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
+                          <Building2 className="h-5 w-5 shrink-0 text-primary-600" aria-hidden="true" />
                           <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{result.company.title}</h3>
                           <span className="rounded-full bg-primary-50 px-2.5 py-1 text-xs font-medium text-primary-700 dark:bg-primary-900/20 dark:text-primary-200">
                             workflow: similar-company
@@ -224,6 +245,26 @@ export default function SimilarCompanyFinder() {
                         {Math.round(result.similarity * 100)}% match
                       </div>
                     </div>
+
+                    <div className="mt-4 grid gap-3 text-sm md:grid-cols-2">
+                      <div className="flex min-w-0 items-start gap-2 text-gray-700 dark:text-gray-200">
+                        <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-gray-500" aria-hidden="true" />
+                        <span className="break-words">{result.address || '地址未发现'}</span>
+                      </div>
+                      <div className="flex min-w-0 items-start gap-2 text-gray-700 dark:text-gray-200">
+                        <Phone className="mt-0.5 h-4 w-4 shrink-0 text-gray-500" aria-hidden="true" />
+                        {result.phone ? <a className="break-all text-primary-700 hover:underline dark:text-primary-300" href={`tel:${result.phone}`}>{result.phone}</a> : <span>电话未发现</span>}
+                      </div>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+                      {result.mapVerified ? (
+                        <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-300"><CheckCircle2 className="h-4 w-4" aria-hidden="true" />地图已验证</span>
+                      ) : <span className="text-amber-700 dark:text-amber-300">地图待复核</span>}
+                      {result.map?.confidence !== undefined ? <span className="text-xs text-gray-500 dark:text-gray-400">confidence {result.map.confidence}</span> : null}
+                      {result.contactEmails?.length ? result.contactEmails.map((email) => <a key={email} className="inline-flex max-w-full items-center gap-1 break-all rounded-full bg-sky-100 px-2.5 py-1 text-xs text-sky-900 hover:underline dark:bg-sky-900/30 dark:text-sky-100" href={`mailto:${email}`}><Mail className="h-3 w-3 shrink-0" aria-hidden="true" />{email}</a>) : <span className="text-xs text-gray-500 dark:text-gray-400">未发现公开邮箱</span>}
+                    </div>
+                    {result.contactPages?.length ? <div className="mt-2 break-words text-xs text-gray-500 dark:text-gray-400">邮箱来源页：{result.contactPages.map((page) => <a key={page} href={page} target="_blank" rel="noreferrer" className="ml-1 text-primary-700 hover:underline dark:text-primary-300">{page}</a>)}</div> : null}
 
                     <div className="mt-4 grid gap-4 md:grid-cols-2">
                       <InfoBlock

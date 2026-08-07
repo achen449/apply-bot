@@ -4,20 +4,35 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
-import { Loader2 } from 'lucide-react';
+import { Building2, Loader2, Mail, MapPin, Phone } from 'lucide-react';
 
 interface SimilarCompany {
   name: string;
+  companyName?: string;
   website?: string;
   industry?: string;
   description?: string;
   similarityScore: number;
+  similarity?: number;
   reasoning?: string;
+  address?: string;
+  phone?: string;
+  contactEmails?: string[];
+  contactPages?: string[];
+  mapVerified?: boolean;
 }
 
 interface ApiResponse {
   reasoning: string;
-  companies: SimilarCompany[];
+  companies?: SimilarCompany[];
+  results?: Array<Partial<SimilarCompany> & { company?: { title?: string; url?: string; snippet?: string }; profile?: { name?: string; website?: string } }>;
+  runId?: string | null;
+}
+
+function normalizeSimilarityPercent(value: unknown) {
+  const score = Number(value)
+  if (!Number.isFinite(score)) return 0
+  return Math.max(0, Math.min(100, score <= 1 ? score * 100 : score))
 }
 
 export default function SimilarCompany() {
@@ -57,7 +72,15 @@ export default function SimilarCompany() {
 
       const data: ApiResponse = await response.json();
       setReasoning(data.reasoning);
-      setCompanies(data.companies);
+      const rawCompanies = (data.companies || data.results || []) as Array<Partial<SimilarCompany> & { company?: { title?: string; url?: string; snippet?: string }; profile?: { name?: string; website?: string } }>;
+      const normalizedCompanies = rawCompanies.map((company) => ({
+        ...company,
+        name: company.name || company.companyName || company.company?.title || company.profile?.name || '未命名公司',
+        website: company.website || company.company?.url || company.profile?.website || '',
+        similarityScore: normalizeSimilarityPercent(company.similarityScore ?? company.similarity ?? 0),
+        reasoning: company.reasoning || company.company?.snippet || ''
+      })) as SimilarCompany[];
+      setCompanies(normalizedCompanies);
     } catch (err) {
       setError(err instanceof Error ? err.message : '发生未知错误');
     } finally {
@@ -162,11 +185,11 @@ export default function SimilarCompany() {
                   key={index}
                   className="border rounded-lg p-4 hover:bg-gray-50 transition-colors"
                 >
-                  <div className="flex justify-between items-start mb-2">
-                    <h3 className="text-xl font-semibold">{company.name}</h3>
+                  <div className="flex justify-between items-start mb-2 gap-3">
+                    <h3 className="flex min-w-0 items-center gap-2 break-words text-xl font-semibold"><Building2 className="h-5 w-5 shrink-0 text-primary-600" />{company.name}</h3>
                     <div className="text-right">
                       <div className="text-2xl font-bold text-blue-600">
-                        {Math.round(company.similarityScore * 100)}%
+                        {Math.round(company.similarityScore)}%
                       </div>
                       <div className="text-sm text-gray-500">相似度</div>
                     </div>
@@ -199,6 +222,16 @@ export default function SimilarCompany() {
                       <p className="text-gray-700 mt-1">{company.description}</p>
                     </div>
                   )}
+
+                  <div className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
+                    <div className="flex min-w-0 items-start gap-2"><MapPin className="mt-0.5 h-4 w-4 shrink-0 text-gray-500" /><span className="break-words">{company.address || '地址未发现'}</span></div>
+                    <div className="flex min-w-0 items-start gap-2"><Phone className="mt-0.5 h-4 w-4 shrink-0 text-gray-500" />{company.phone ? <a className="break-all text-primary-600 hover:underline" href={`tel:${company.phone}`}>{company.phone}</a> : <span>电话未发现</span>}</div>
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+                    <span className={company.mapVerified ? 'text-emerald-700' : 'text-amber-700'}>地图：{company.mapVerified ? '已验证' : '待复核'}</span>
+                    {company.contactEmails?.length ? company.contactEmails.map((email) => <a key={email} className="inline-flex max-w-full items-center gap-1 break-all rounded-full bg-sky-100 px-2.5 py-1 text-xs text-sky-900 hover:underline" href={`mailto:${email}`}><Mail className="h-3 w-3" />{email}</a>) : <span className="text-gray-500">未发现公开邮箱</span>}
+                  </div>
+                  {company.contactPages?.length ? <div className="mt-2 break-words text-xs text-gray-500">邮箱来源页：{company.contactPages.join(' | ')}</div> : null}
 
                   {company.reasoning && (
                     <div className="text-sm mt-3 pt-3 border-t">

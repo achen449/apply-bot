@@ -26,9 +26,23 @@ interface ScoredCompany {
   website?: string
   country?: string
   segment?: string
+  address?: string
+  phone?: string
+  contactEmails?: string[]
+  mapVerified?: boolean
+  dataQuality?: {
+    needsReview?: boolean
+  } | null
 }
 
 interface LeadFinderResponse {
+  runId?: string
+  status?: string
+  partial?: boolean
+  workspace?: {
+    id?: string
+    persistence?: { saved?: boolean; reason?: string }
+  }
   companies: ScoredCompany[]
   toolCalls: ToolCall[]
   cacheStatus?: {
@@ -199,6 +213,18 @@ export default function LeadFinder() {
 
       {result && (
         <>
+          <Card className="border-gray-200 dark:border-stone-700 shadow-sm">
+            <CardContent className="flex flex-wrap items-center justify-between gap-3 py-4 text-sm">
+              <div className="flex flex-wrap items-center gap-2 text-gray-700 dark:text-gray-200">
+                <span className="font-semibold">流程状态：</span>
+                <span>{result.status === 'completed' ? '已完成' : result.status === 'needs_review' ? '待复核' : result.status || '未记录'}</span>
+                {result.partial ? <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs text-amber-900 dark:bg-amber-900/30 dark:text-amber-100">部分结果</span> : null}
+                {result.runId ? <span className="break-all text-xs text-gray-500 dark:text-gray-400">Run: {result.runId}</span> : null}
+              </div>
+              {result.workspace?.id ? <div className="flex flex-wrap gap-2"><a className="rounded-lg border border-gray-200 px-3 py-2 text-xs text-gray-700 hover:bg-gray-50 dark:border-stone-700 dark:text-gray-200 dark:hover:bg-stone-800" href={`/api/lead-workspaces/${result.workspace.id}/export.csv`}>导出 CSV</a><a className="rounded-lg bg-primary-600 px-3 py-2 text-xs text-white hover:bg-primary-700" href={`/api/lead-workspaces/${result.workspace.id}/export.xlsx`}>导出 XLSX</a></div> : null}
+            </CardContent>
+          </Card>
+
           {result.cacheStatus && (
             <Card className="border-gray-200 dark:border-stone-700 shadow-sm">
               <CardContent className="py-4">
@@ -318,6 +344,12 @@ export default function LeadFinder() {
                             )}
                           </div>
                         )}
+                        <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+                          <span className="break-words text-gray-600 dark:text-gray-300">地址：{company.address || '未发现'}</span>
+                          <span className="break-words text-gray-600 dark:text-gray-300">电话：{company.phone || '未发现'}</span>
+                          <span className="break-words text-gray-600 dark:text-gray-300">公开邮箱：{company.contactEmails?.join(' | ') || '未发现'}</span>
+                          <span className="text-gray-600 dark:text-gray-300">地图：{company.mapVerified ? '已验证' : '待复核'}</span>
+                        </div>
                         <p className="mt-3 text-sm text-gray-700 dark:text-gray-300">{company.reasoning}</p>
                       </div>
                       <div className="text-right">

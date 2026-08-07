@@ -100,6 +100,29 @@ test('serverless lead finder returns partial evidence when the AI budget is exha
   assert.equal(result.toolCalls[0].function.name, 'search_web')
 })
 
+test('Lead Finder expands tool budget with the selected research mode', async () => {
+  const received = []
+  const service = createLeadFinderService({
+    aiAgent: {
+      async executeTask(options) {
+        received.push(options)
+        return {
+          parsedJson: { companies: [] },
+          finalText: '',
+          toolCalls: [],
+          status: 'needs_review',
+          partial: false
+        }
+      }
+    }
+  })
+
+  await service.discoverWorkspace({ industry: 'industrial connectors', mode: 'standard' })
+  await service.discoverWorkspace({ industry: 'industrial connectors', mode: 'deep' })
+
+  assert.deepEqual(received.map((options) => [options.maxIterations, options.maxToolCalls]), [[8, 10], [12, 20]])
+})
+
 test('lead-finder response is not blocked by a slow research-run persistence call', async () => {
   const app = express()
   app.use(express.json())

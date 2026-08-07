@@ -28,9 +28,39 @@ export interface LeadCompany {
   matchedProviders?: string[]
   matchedQueryLabels?: string[]
   contactEmails?: string[]
+  emails?: Array<{
+    value: string
+    type: string
+    sourceUrl: string
+    observedAt: string
+  }>
   contactPages?: string[]
+  contactEmailStatus?: string
   phone?: string
   address?: string
+  mapVerified?: boolean
+  map?: {
+    verified?: boolean
+    placeId?: string
+    confidence?: number
+    sourceUrl?: string
+    businessStatus?: string
+  } | null
+  evidence?: Array<{
+    type?: string
+    sourceUrl?: string
+    title?: string
+    snippet?: string
+    value?: string
+    observedAt?: string
+  }>
+  dataQuality?: {
+    hasOfficialWebsite?: boolean
+    hasMapEvidence?: boolean
+    hasPublicPhone?: boolean
+    hasPublicEmail?: boolean
+    needsReview?: boolean
+  } | null
   notes?: string
   outreachNotes?: string
   pipelineStatus?: string

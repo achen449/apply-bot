@@ -38,9 +38,9 @@ export function normalizeMode(value) {
 export function getModeLimits(mode) {
   const normalizedMode = normalizeMode(mode)
   const limits = {
-    economy: { maxIterations: 5, maxSearchCalls: 3, maxVerifications: 3, maxResults: 5 },
-    standard: { maxIterations: 8, maxSearchCalls: 5, maxVerifications: 5, maxResults: 10 },
-    deep: { maxIterations: 12, maxSearchCalls: 10, maxVerifications: 10, maxResults: 20 }
+    economy: { maxIterations: 5, maxSearchCalls: 3, maxVerifications: 3, maxToolCalls: 6, maxResults: 5 },
+    standard: { maxIterations: 8, maxSearchCalls: 5, maxVerifications: 5, maxToolCalls: 10, maxResults: 10 },
+    deep: { maxIterations: 12, maxSearchCalls: 10, maxVerifications: 10, maxToolCalls: 20, maxResults: 20 }
   }
 
   return limits[normalizedMode]
@@ -125,7 +125,10 @@ export function summarizeToolCalls(toolCalls = []) {
         address: call.arguments?.address || '',
         ok: call.result?.ok !== false,
         verified: Boolean(call.result?.verified),
-        confidence: Number(call.result?.confidence || 0)
+        confidence: Number(call.result?.confidence || 0),
+        candidate: call.result?.candidates?.[0] || null,
+        candidates: Array.isArray(call.result?.candidates) ? call.result.candidates : [],
+        error: call.result?.error || null
       })),
     toolCalls: calls
   }

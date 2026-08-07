@@ -194,7 +194,7 @@ export function createVerifyCompanyTool({ googleMapsAdapter, timeoutMs = 30000 }
           }
         } catch (error) {
           return {
-            ok: true,
+            ok: false,
             verified: false,
             address: '',
             confidence: 0,

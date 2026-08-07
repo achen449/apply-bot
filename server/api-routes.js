@@ -18,7 +18,8 @@ import { createGoogleMapsSearchService } from './modules/leads/application/servi
 import { createAddressClassificationService } from './modules/leads/application/services/address-classification-service.js'
 import { createLeadDiscoveryService } from './modules/leads/application/services/lead-discovery-service.js'
 import { createOsintResearchService } from './modules/leads/application/services/osint-research-service.js'
-import { createResearchRunsStorage } from './modules/leads/storage/research-runs-storage.js'
+import { createWebsiteContactEnrichmentService } from './modules/leads/application/services/website-contact-enrichment-service.js'
+import { createCompanyEnrichmentService } from './modules/leads/application/services/company-enrichment-service.js'
 import { createUsageStatsStorage } from './modules/leads/storage/usage-stats-storage.js'
 import { createLeadSupportRouter } from './modules/leads/routes/lead-support-routes.js'
 import { createLeadExportRouter } from './modules/leads/routes/lead-export-routes.js'
@@ -39,8 +40,10 @@ const serverlessLeadFinderPolicy = isServerlessRuntime
       // 0 means AIAgent uses AI_TIMEOUT_MS and AI_MAX_TOKENS from the env.
       aiTimeoutMs: 0,
       maxTokens: 0,
-      maxIterationsCap: 5,
-      maxToolCalls: 6,
+      // Lead Finder applies the economy/standard/deep limits itself. Do not
+      // override those mode budgets with a smaller serverless cap.
+      maxIterationsCap: 0,
+      maxToolCalls: 0,
       toolTimeoutMs: 8000
     }
   : {}
@@ -97,6 +100,17 @@ const googleMapsSearchService = createGoogleMapsSearchService({
   googleMapsAdapter
 })
 
+const websiteContactEnrichmentService = createWebsiteContactEnrichmentService({
+  timeoutMs: isServerlessRuntime ? 3500 : 5000,
+  maxPages: isServerlessRuntime ? 3 : 4
+})
+
+const companyEnrichmentService = createCompanyEnrichmentService({
+  googleMapsSearchService,
+  websiteContactEnrichmentService,
+  mapTimeoutMs: isServerlessRuntime ? 6000 : 8000
+})
+
 const aiTools = aiAgent ? createLeadAITools({
   tavilyAdapter,
   braveAdapter,
@@ -108,27 +122,30 @@ const leadFinderService = aiAgent ? createLeadFinderService({
   aiAgent,
   tools: aiTools,
   promptStorage: gistService,
-  ...serverlessLeadFinderPolicy
+  ...serverlessLeadFinderPolicy,
+  companyEnrichmentService
 }) : null
 
 const similarCompanyService = aiAgent ? createSimilarCompanyService({
   aiAgent,
   tools: aiTools,
-  promptStorage: gistService
+  promptStorage: gistService,
+  companyEnrichmentService
 }) : null
 
 const osintService = aiAgent ? createOsintService({
   aiAgent,
   tools: aiTools,
   promptStorage: gistService,
-  gistStorage: gistService
+  gistStorage: gistService,
+  companyEnrichmentService,
+  persistResearchRun: false
 }) : null
 
 const addressClassificationService = createAddressClassificationService({
   googleMapsSearchService
 })
 
-const researchRunsStorage = createResearchRunsStorage({ gistService })
 const usageStatsStorage = createUsageStatsStorage({ gistService })
 
 const promptStorage = {
@@ -144,10 +161,15 @@ const promptStorage = {
 }
 
 const researchRunsStorageAdapter = {
-  async list({ limit = 100, offset = 0 } = {}) {
+  async list({ limit = 100, offset = 0, workflow = '', status = '', query = '', from = '', to = '' } = {}) {
     const result = await gistService.readCustomerData()
-    const runs = Array.isArray(result.data?.researchRuns) ? result.data.researchRuns : []
-    return runs.slice(offset, offset + limit)
+    const runs = (Array.isArray(result.data?.researchRuns) ? result.data.researchRuns : [])
+      .filter((run) => !workflow || run.workflow === workflow)
+      .filter((run) => !status || run.status === status)
+      .filter((run) => !query || JSON.stringify(run).toLowerCase().includes(String(query).toLowerCase()))
+      .filter((run) => !from || new Date(run.createdAt || 0) >= new Date(from))
+      .filter((run) => !to || new Date(run.createdAt || 0) <= new Date(to))
+    return runs.slice(Math.max(0, offset), Math.max(0, offset) + Math.max(1, limit))
   },
   async save(run) {
     await gistService.saveResearchRun(run)
@@ -230,6 +252,7 @@ const evidenceOsintService = createOsintResearchService({
   googleMapsSearch: googleMapsSearchService.search,
   braveSearch: braveAdapter.search,
   tavilySearch: tavilyAdapter.search,
+  websiteContactEnrichment: websiteContactEnrichmentService.enrich,
   providerAvailability: {
     googleMaps: providerAvailability.googleMaps.available,
     brave: providerAvailability.brave.available,
@@ -725,7 +748,8 @@ const leadApiRouter = createLeadApiRouter({
   usageStatsStorage: usageStatsStorageAdapter,
   providerAvailability,
   aiConfiguration,
-  persistTimeoutMs: isServerlessRuntime ? 10000 : 0
+  persistTimeoutMs: isServerlessRuntime ? 10000 : 0,
+  leadWorkspaceRepository
 })
 
 const leadSupportRouter = createLeadSupportRouter({
@@ -734,7 +758,8 @@ const leadSupportRouter = createLeadSupportRouter({
   googleMapsSearchService,
   researchRunsStorage: researchRunsStorageAdapter,
   gistCustomerDataService: gistService,
-  providerAvailability
+  providerAvailability,
+  websiteContactEnrichmentService
 })
 
 const leadExportRouter = createLeadExportRouter({
@@ -747,3 +772,4 @@ router.use('/', leadSupportRouter)
 router.use('/', leadExportRouter)
 
 export default router
+export { evidenceOsintService }

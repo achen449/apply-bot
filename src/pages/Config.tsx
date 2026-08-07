@@ -18,13 +18,15 @@ interface CurrentResume {
   textLength: number
 }
 
+type JobFilterValue = string | number | boolean | string[] | null | undefined
+
 interface JobFilter {
   id: string
   name: string
   type: 'select' | 'multiselect' | 'text' | 'number' | 'boolean' | 'list'
   description: string
   aiExplanation: string
-  value: any
+  value: JobFilterValue
   enabled?: boolean
   options?: string[]
   placeholder?: string
@@ -273,7 +275,7 @@ export default function Config() {
     }
   }
 
-  const handleFilterChange = async (filterId: string, newValue: any) => {
+  const handleFilterChange = async (filterId: string, newValue: JobFilterValue) => {
     const updatedFilters = jobFilters.map(filter =>
       filter.id === filterId ? { ...filter, value: newValue } : filter
     )
@@ -485,11 +487,11 @@ export default function Config() {
         return (
           <div className="flex items-center gap-2">
             <Switch
-              checked={filter.value || false}
+              checked={typeof filter.value === 'boolean' ? filter.value : false}
               onCheckedChange={(checked) => handleFilterChange(filter.id, checked)}
             />
             <span className="text-sm text-gray-700 dark:text-gray-300">
-              {filter.value ? 'Enabled' : 'Disabled'}
+              {typeof filter.value === 'boolean' && filter.value ? 'Enabled' : 'Disabled'}
             </span>
           </div>
         )
@@ -502,7 +504,7 @@ export default function Config() {
             )}
             <input
               type="number"
-              value={filter.value || 0}
+              value={typeof filter.value === 'number' ? filter.value : 0}
               onChange={(e) => handleFilterChange(filter.id, parseFloat(e.target.value) || 0)}
               min={filter.min}
               max={filter.max}
@@ -514,7 +516,7 @@ export default function Config() {
       case 'select':
         return (
           <select
-            value={filter.value || ''}
+            value={typeof filter.value === 'string' ? filter.value : ''}
             onChange={(e) => handleFilterChange(filter.id, e.target.value)}
             className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-stone-600 rounded-lg bg-white dark:bg-stone-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
@@ -526,7 +528,7 @@ export default function Config() {
           </select>
         )
 
-      case 'list':
+      case 'list': {
         const listValue = Array.isArray(filter.value) ? filter.value : []
         return (
           <div className="space-y-2">
@@ -592,8 +594,9 @@ export default function Config() {
             )}
           </div>
         )
+      }
 
-      case 'multiselect':
+      case 'multiselect': {
         const multiselectValue = Array.isArray(filter.value) ? filter.value : []
         return (
           <div className="space-y-2">
@@ -632,13 +635,14 @@ export default function Config() {
             )}
           </div>
         )
+      }
 
       case 'text':
       default:
         return (
           <input
             type="text"
-            value={filter.value || ''}
+            value={typeof filter.value === 'string' ? filter.value : ''}
             onChange={(e) => handleFilterChange(filter.id, e.target.value)}
             placeholder={filter.placeholder}
             className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-stone-600 rounded-lg bg-white dark:bg-stone-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"

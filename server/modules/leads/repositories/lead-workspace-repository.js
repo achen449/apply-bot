@@ -58,6 +58,14 @@ function createGistLeadWorkspaceRepository(gistCustomerDataService) {
     return result.data
   }
 
+  async function mutateDocument(mutator, fallbackPatch) {
+    if (typeof gistCustomerDataService.mutateCustomerData === 'function') {
+      const result = await gistCustomerDataService.mutateCustomerData(mutator)
+      return result.data
+    }
+    return writeDocument(fallbackPatch)
+  }
+
   return {
     init() {},
     async list() {
@@ -71,7 +79,12 @@ function createGistLeadWorkspaceRepository(gistCustomerDataService) {
     async prependAndTrim(workspace, limit = 25) {
       const workspaces = await this.list()
       const nextWorkspaces = [workspace, ...workspaces.filter((item) => item.id !== workspace.id)].slice(0, limit)
-      await writeDocument({
+      await mutateDocument((current) => ({
+        ...current,
+        leadWorkspaces: [workspace, ...ensureWorkspaceArray(current.leadWorkspaces).filter((item) => item.id !== workspace.id)].slice(0, limit),
+        lastSyncedAt: new Date().toISOString(),
+        lastSyncSource: 'lead-workspace-repository'
+      }), {
         leadWorkspaces: nextWorkspaces,
         lastSyncedAt: new Date().toISOString(),
         lastSyncSource: 'lead-workspace-repository'
@@ -103,7 +116,24 @@ function createGistLeadWorkspaceRepository(gistCustomerDataService) {
       }
 
       const nextWorkspaces = workspaces.map((item, index) => index === workspaceIndex ? nextWorkspace : item)
-      await writeDocument({
+      await mutateDocument((current) => {
+        const latestWorkspaces = ensureWorkspaceArray(current.leadWorkspaces)
+        const latestIndex = latestWorkspaces.findIndex((item) => item.id === workspaceId)
+        if (latestIndex === -1) return current
+        const latestWorkspace = latestWorkspaces[latestIndex]
+        const latestCompanyIndex = ensureWorkspaceArray(latestWorkspace.companies).findIndex((item) => item.id === companyId)
+        if (latestCompanyIndex === -1) return current
+        const updatedLatestWorkspace = {
+          ...latestWorkspace,
+          companies: latestWorkspace.companies.map((company, index) => index === latestCompanyIndex ? updater(company, latestWorkspace) : company)
+        }
+        return {
+          ...current,
+          leadWorkspaces: latestWorkspaces.map((item, index) => index === latestIndex ? updatedLatestWorkspace : item),
+          lastSyncedAt: new Date().toISOString(),
+          lastSyncSource: 'lead-workspace-repository'
+        }
+      }, {
         leadWorkspaces: nextWorkspaces,
         lastSyncedAt: new Date().toISOString(),
         lastSyncSource: 'lead-workspace-repository'
