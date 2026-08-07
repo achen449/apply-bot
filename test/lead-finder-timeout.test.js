@@ -73,12 +73,12 @@ test('serverless lead finder returns partial evidence when the AI budget is exha
 
   const service = createLeadFinderService({
     aiAgent,
-    requestBudgetMs: 45000,
-    aiTimeoutMs: 20000,
-    maxTokens: 4000,
-    maxIterationsCap: 2,
-    maxToolCalls: 4,
-    toolTimeoutMs: 4000
+    requestBudgetMs: 240000,
+    aiTimeoutMs: 120000,
+    maxTokens: 12000,
+    maxIterationsCap: 5,
+    maxToolCalls: 6,
+    toolTimeoutMs: 8000
   })
 
   const result = await service.discoverWorkspace({
@@ -88,11 +88,11 @@ test('serverless lead finder returns partial evidence when the AI budget is exha
     mode: 'economy'
   })
 
-  assert.equal(receivedOptions.deadlineMs, 45000)
-  assert.equal(receivedOptions.timeoutMs, 20000)
-  assert.equal(receivedOptions.maxTokens, 4000)
-  assert.equal(receivedOptions.maxIterations, 2)
-  assert.equal(receivedOptions.maxToolCalls, 4)
+  assert.equal(receivedOptions.deadlineMs, 240000)
+  assert.equal(receivedOptions.timeoutMs, 120000)
+  assert.equal(receivedOptions.maxTokens, 12000)
+  assert.equal(receivedOptions.maxIterations, 5)
+  assert.equal(receivedOptions.maxToolCalls, 6)
   assert.equal(result.status, 'needs_review')
   assert.equal(result.partial, true)
   assert.equal(result.metadata.status, 'needs_review')

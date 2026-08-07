@@ -31,16 +31,17 @@ const projectRoot = path.resolve(__dirname, '..')
 const isServerlessRuntime = Boolean(process.env.VERCEL || process.env.LAMBDA_TASK_ROOT || process.env.AWS_LAMBDA_FUNCTION_NAME)
 const writableRoot = isServerlessRuntime ? path.join(os.tmpdir(), 'apply-bot') : projectRoot
 
-// Keep the configured environment values unchanged, but enforce a bounded
-// synchronous budget for Vercel's current 60-second runtime limit.
+// Keep the configured environment values unchanged, but leave headroom below
+// the configured Vercel function duration for the final response and storage.
 const serverlessLeadFinderPolicy = isServerlessRuntime
   ? {
-      requestBudgetMs: 45000,
-      aiTimeoutMs: 20000,
-      maxTokens: 4000,
-      maxIterationsCap: 2,
-      maxToolCalls: 4,
-      toolTimeoutMs: 4000
+      requestBudgetMs: 240000,
+      // 0 means AIAgent uses AI_TIMEOUT_MS and AI_MAX_TOKENS from the env.
+      aiTimeoutMs: 0,
+      maxTokens: 0,
+      maxIterationsCap: 5,
+      maxToolCalls: 6,
+      toolTimeoutMs: 8000
     }
   : {}
 
@@ -100,7 +101,7 @@ const aiTools = aiAgent ? createLeadAITools({
   tavilyAdapter,
   braveAdapter,
   googleMapsAdapter,
-  timeoutMs: isServerlessRuntime ? 4000 : 8000
+  timeoutMs: 8000
 }) : []
 
 const leadFinderService = aiAgent ? createLeadFinderService({
@@ -724,7 +725,7 @@ const leadApiRouter = createLeadApiRouter({
   usageStatsStorage: usageStatsStorageAdapter,
   providerAvailability,
   aiConfiguration,
-  persistTimeoutMs: isServerlessRuntime ? 5000 : 0
+  persistTimeoutMs: isServerlessRuntime ? 10000 : 0
 })
 
 const leadSupportRouter = createLeadSupportRouter({
