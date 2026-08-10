@@ -16,7 +16,6 @@ import { createBraveAdapter } from './modules/leads/providers/brave-adapter.js'
 import { createGoogleMapsAdapter } from './modules/leads/providers/google-maps-adapter.js'
 import { createGoogleMapsSearchService } from './modules/leads/application/services/google-maps-search-service.js'
 import { createAddressClassificationService } from './modules/leads/application/services/address-classification-service.js'
-import { createLeadDiscoveryService } from './modules/leads/application/services/lead-discovery-service.js'
 import { createOsintResearchService } from './modules/leads/application/services/osint-research-service.js'
 import { createWebsiteContactEnrichmentService } from './modules/leads/application/services/website-contact-enrichment-service.js'
 import { createCompanyEnrichmentService } from './modules/leads/application/services/company-enrichment-service.js'
@@ -34,14 +33,14 @@ const writableRoot = isServerlessRuntime ? path.join(os.tmpdir(), 'apply-bot') :
 
 // Keep the configured environment values unchanged, but leave headroom below
 // the configured Vercel function duration for the final response and storage.
-const serverlessLeadFinderPolicy = isServerlessRuntime
+const serverlessAiPolicy = isServerlessRuntime
   ? {
       requestBudgetMs: 240000,
       // 0 means AIAgent uses AI_TIMEOUT_MS and AI_MAX_TOKENS from the env.
       aiTimeoutMs: 0,
       maxTokens: 0,
-      // Lead Finder applies the economy/standard/deep limits itself. Do not
-      // override those mode budgets with a smaller serverless cap.
+      // Lead Finder and Similar Company apply their mode/result budgets
+      // themselves. Do not override those budgets with a smaller cap.
       maxIterationsCap: 0,
       maxToolCalls: 0,
       toolTimeoutMs: 8000
@@ -122,7 +121,7 @@ const leadFinderService = aiAgent ? createLeadFinderService({
   aiAgent,
   tools: aiTools,
   promptStorage: gistService,
-  ...serverlessLeadFinderPolicy,
+  ...serverlessAiPolicy,
   companyEnrichmentService
 }) : null
 
@@ -130,7 +129,13 @@ const similarCompanyService = aiAgent ? createSimilarCompanyService({
   aiAgent,
   tools: aiTools,
   promptStorage: gistService,
-  companyEnrichmentService
+  companyEnrichmentService,
+  requestBudgetMs: serverlessAiPolicy.requestBudgetMs || 0,
+  maxIterations: serverlessAiPolicy.maxIterationsCap || 0,
+  aiTimeoutMs: serverlessAiPolicy.aiTimeoutMs || 0,
+  maxTokens: serverlessAiPolicy.maxTokens || 0,
+  maxToolCalls: serverlessAiPolicy.maxToolCalls || 0,
+  toolTimeoutMs: serverlessAiPolicy.toolTimeoutMs || 0
 }) : null
 
 const osintService = aiAgent ? createOsintService({

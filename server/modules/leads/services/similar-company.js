@@ -46,14 +46,15 @@ const SIMILAR_COMPANY_PROMPT = `你是一位经验丰富的B2B市场研究专家
 
 5. **输出结果**
    - 按相似度评分从高到低排序
-   - 优先返回最多 {{maxResults}} 家高质量结果；若公开证据不足，可少于该数量，但不能为了凑数编造
+   - 用户请求 {{requestedCount}} 家；先建立至少 {{candidatePoolTarget}} 家候选池，再经过证据、买家相关性和去重过滤
+   - 展示所有通过筛选的结果（最多 {{candidatePoolTarget}} 家），不要把结果再次截断到用户请求数量；若公开证据不足，可以少于请求数量，但不能为了凑数编造
    - 提供清晰的相似理由说明
    - 对 shortlist 公司优先调用 verify_company，尽量加入地图验证信号
 
 ## 执行预算（必须遵守）
 
-- 最多调用 2 次 search_web 和 1 次 verify_company；完成这些调用后立即输出最终 JSON
-- 不要为了增加数量继续搜索；公开证据不足时返回较少结果
+- 最多调用 {{maxSearchCalls}} 次 search_web 和 1 次 verify_company；候选池未达到目标前，继续使用不同维度的查询
+  - search_web.maxResults 应使用 {{perSearchResults}}；完成搜索后输出候选池中的所有合格公司
 - 最终回复必须是可解析的 JSON，不要输出 Markdown 代码围栏或额外解释
 
 ## 注意事项
@@ -73,7 +74,9 @@ const SIMILAR_COMPANY_PROMPT = `你是一位经验丰富的B2B市场研究专家
 - 行业：{{industry}}
 - 目标市场：{{targetMarket}}
 - 国家：{{country}}
-- 最大结果数：{{maxResults}}
+- 用户请求数量：{{requestedCount}}
+- 候选池目标：{{candidatePoolTarget}}
+- 每次搜索返回数：{{perSearchResults}}
 
 ## 输出格式（JSON）
 
@@ -121,6 +124,46 @@ function normalizeCompany(company = {}, index) {
     verified: Boolean(company.verified || company.mapVerified),
     mapVerified: Boolean(company.mapVerified || company.verified),
     dataQuality: company.dataQuality || null
+  }
+}
+
+const SIMILAR_DEFAULT_RESULT_COUNT = 10
+const SIMILAR_MAX_RESULT_COUNT = 50
+const SIMILAR_MAX_CANDIDATE_POOL = 60
+const SIMILAR_MAX_SEARCH_CALLS = 8
+const SIMILAR_MAX_RESULTS_PER_SEARCH = 20
+
+function normalizeResultCount(value, fallback = SIMILAR_DEFAULT_RESULT_COUNT) {
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed)
+    ? Math.min(Math.max(parsed, 1), SIMILAR_MAX_RESULT_COUNT)
+    : fallback
+}
+
+function buildSimilarSearchPlan(requestedCount) {
+  const candidatePoolTarget = Math.min(
+    SIMILAR_MAX_CANDIDATE_POOL,
+    Math.max(requestedCount * 2, requestedCount + 10)
+  )
+  const maxSearchCalls = Math.min(
+    SIMILAR_MAX_SEARCH_CALLS,
+    Math.max(3, Math.ceil(candidatePoolTarget / 8))
+  )
+  const perSearchResults = Math.min(
+    SIMILAR_MAX_RESULTS_PER_SEARCH,
+    Math.max(8, Math.ceil(candidatePoolTarget / maxSearchCalls))
+  )
+
+  return {
+    requestedCount,
+    candidatePoolTarget,
+    minimumQualifiedResults: requestedCount,
+    displayPolicy: 'all-qualified-up-to-candidate-pool',
+    verificationTarget: requestedCount,
+    maxSearchCalls,
+    maxToolCalls: maxSearchCalls + 2,
+    maxIterations: maxSearchCalls + 3,
+    perSearchResults
   }
 }
 
@@ -181,6 +224,54 @@ function buildPartialAiJson(toolCalls = [], sampleCompany = {}, maxResults = 5) 
       companyName: candidate.name
     }))
   }
+}
+
+function buildProviderCandidates(toolCalls = [], sampleCompany = {}) {
+  const sampleHost = websiteHost(sampleCompany.website)
+  const candidates = []
+
+  for (const call of Array.isArray(toolCalls) ? toolCalls : []) {
+    if (call?.name !== 'search_web' || call.result?.ok === false) {
+      continue
+    }
+
+    for (const item of call.result?.results || []) {
+      const rawTitle = normalizeText(item.title || item.name)
+      const name = rawTitle.split('|')[0].trim()
+      const website = normalizeText(item.url || item.website)
+
+      if (!name || !website || (sampleHost && websiteHost(website) === sampleHost)) {
+        continue
+      }
+
+      candidates.push({
+        name,
+        companyName: name,
+        website,
+        similarityScore: 60,
+        businessSimilarity: 24,
+        marketSimilarity: 18,
+        scaleSimilarity: 18,
+        reason: normalizeText(item.snippet, 'The company appeared in a related public search result.').slice(0, 420),
+        source: item.provider || call.arguments?.provider || 'web-search',
+        sourceUrl: website,
+        evidence: [{
+          type: 'public_web',
+          sourceUrl: website,
+          title: rawTitle,
+          snippet: item.snippet || ''
+        }]
+      })
+    }
+  }
+
+  return dedupeCompanyCandidates(candidates).filter(isLikelyBuyerCandidate)
+}
+
+function countQualifiedProviderCandidates(toolCalls = [], sampleCompany = {}) {
+  return dedupeCompanyCandidates(buildProviderCandidates(toolCalls, sampleCompany))
+    .filter(isLikelyBuyerCandidate)
+    .length
 }
 
 function normalizeEntityKey(value) {
@@ -264,20 +355,98 @@ function findProviderEvidence(company = {}, evidenceIndex = {}) {
   )) || null
 }
 
-async function runProviderFallback(tools = [], { companyName, industry, country, maxResults } = {}) {
+function candidateIdentity(company = {}) {
+  const host = websiteHost(company.website)
+  if (host) {
+    return `host:${host}`
+  }
+
+  const name = normalizeEntityKey(company.companyName || company.name)
+  return name ? `name:${name}` : ''
+}
+
+function mergeGroundedCandidates(aiCandidates = [], providerCandidates = [], evidenceIndex = {}) {
+  const merged = []
+  const byIdentity = new Map()
+
+  function addCandidate(candidate, providerEvidence = null) {
+    const identity = candidateIdentity(candidate)
+    if (!identity) {
+      return
+    }
+
+    const existing = byIdentity.get(identity)
+    if (!existing) {
+      const next = { ...candidate, _providerEvidence: providerEvidence }
+      byIdentity.set(identity, next)
+      merged.push(next)
+      return
+    }
+
+    existing.website = existing.website || candidate.website
+    existing.reason = existing.reason || candidate.reason
+    existing.similarityScore = Math.max(existing.similarityScore || 0, candidate.similarityScore || 0)
+    existing.businessSimilarity = Math.max(existing.businessSimilarity || 0, candidate.businessSimilarity || 0)
+    existing.marketSimilarity = Math.max(existing.marketSimilarity || 0, candidate.marketSimilarity || 0)
+    existing.scaleSimilarity = Math.max(existing.scaleSimilarity || 0, candidate.scaleSimilarity || 0)
+    existing._providerEvidence = existing._providerEvidence || providerEvidence
+  }
+
+  for (const candidate of aiCandidates) {
+    if (isGroundedCompany(candidate, evidenceIndex)) {
+      addCandidate(candidate, findProviderEvidence(candidate, evidenceIndex))
+    }
+  }
+
+  for (const candidate of providerCandidates) {
+    addCandidate(candidate, findProviderEvidence(candidate, evidenceIndex) || {
+      website: candidate.website,
+      address: candidate.address || '',
+      phone: candidate.phone || '',
+      evidence: candidate.evidence || []
+    })
+  }
+
+  return merged
+}
+
+async function runProviderFallback(tools = [], {
+  companyName,
+  industry,
+  country,
+  maxResults,
+  maxCalls = 4,
+  existingQueries = []
+} = {}) {
   const searchTool = tools.find((tool) => tool?.name === 'search_web' && typeof tool.execute === 'function')
   if (!searchTool) {
     return []
   }
 
+  if (Array.isArray(searchTool.availableProviders) && searchTool.availableProviders.length === 0) {
+    return []
+  }
+
   const queries = [
     `${companyName} competitors ${industry || 'renewable energy'} official website`,
-    `${industry || 'renewable energy'} companies ${country || ''} energy storage inverter official website`.trim()
+    `${industry || 'renewable energy'} companies ${country || ''} energy storage inverter official website`.trim(),
+    `${industry || 'renewable energy'} buyers ${country || ''} industrial applications official website`.trim(),
+    `${industry || 'renewable energy'} manufacturers ${country || ''} procurement customers official website`.trim(),
+    `${companyName} alternatives ${country || ''} official company website`.trim(),
+    `${industry || 'renewable energy'} system integrators ${country || ''} official website`.trim()
   ]
-  const providers = ['tavily', 'brave']
+  const availableProviders = Array.isArray(searchTool.availableProviders) && searchTool.availableProviders.length > 0
+    ? searchTool.availableProviders
+    : ['tavily', 'brave']
+  const providers = queries.map((_, index) => availableProviders[index % availableProviders.length])
   const calls = []
+  const seenQueries = new Set(existingQueries.filter(Boolean).map((query) => query.toLowerCase()))
 
-  for (let index = 0; index < queries.length && calls.length < 2; index += 1) {
+  for (let index = 0; index < queries.length && calls.length < maxCalls; index += 1) {
+    if (seenQueries.has(queries[index].toLowerCase())) {
+      continue
+    }
+
     const provider = providers[index] || 'tavily'
     const args = { query: queries[index], provider, country, industry, maxResults }
     try {
@@ -302,31 +471,44 @@ async function runProviderFallback(tools = [], { companyName, industry, country,
         }
       })
     }
+    seenQueries.add(queries[index].toLowerCase())
   }
 
   return calls
 }
 
-async function normalizeResult({ payload, aiJson, aiResult, companyEnrichmentService }) {
-  const candidateCompanies = Array.isArray(aiJson?.companies)
+async function normalizeResult({
+  payload,
+  aiJson,
+  aiResult,
+  companyEnrichmentService,
+  searchPlan
+}) {
+  const sampleHost = websiteHost(payload.website)
+  const aiCandidates = Array.isArray(aiJson?.companies)
     ? aiJson.companies
         .map((company, index) => normalizeCompany(company, index))
         .filter((company) => company.similarityScore >= 60)
         .filter((company) => isLikelyBuyerCandidate(company))
-        .sort((a, b) => b.similarityScore - a.similarityScore)
+        .filter((company) => !sampleHost || websiteHost(company.website) !== sampleHost)
     : []
 
   const metadata = buildAiMetadata(aiResult)
   const evidenceIndex = buildEvidenceIndex(aiResult)
-  let companies = candidateCompanies
-    .filter((company) => isGroundedCompany(company, evidenceIndex))
-    .map((company) => {
-      const providerEvidence = findProviderEvidence(company, evidenceIndex)
+  const providerCandidates = buildProviderCandidates(aiResult?.toolCalls, payload)
+  const mergedCandidates = mergeGroundedCandidates(aiCandidates, providerCandidates, evidenceIndex)
+  let companies = mergedCandidates
+    .filter((company) => isLikelyBuyerCandidate(company))
+    .sort((a, b) => (b.similarityScore || 0) - (a.similarityScore || 0))
+    .slice(0, searchPlan.candidatePoolTarget)
+    .map((company, index) => {
+      const providerEvidence = company._providerEvidence || findProviderEvidence(company, evidenceIndex)
+      const normalized = normalizeCompany(company, index)
       return {
-        ...company,
+        ...normalized,
         // AI controls ranking and explanation only. Identity/contact fields
         // must come from the matched provider evidence or later enrichment.
-        website: providerEvidence?.website || '',
+        website: providerEvidence?.website || normalized.website || '',
         address: providerEvidence?.address || '',
         phone: providerEvidence?.phone || '',
         contactEmails: [],
@@ -334,11 +516,11 @@ async function normalizeResult({ payload, aiJson, aiResult, companyEnrichmentSer
         map: null,
         verified: false,
         mapVerified: false,
-        evidence: providerEvidence?.evidence || []
+        evidence: providerEvidence?.evidence || normalized.evidence || []
       }
     })
 
-  if (candidateCompanies.length > 0 && companies.length === 0) {
+  if ((aiCandidates.length > 0 || providerCandidates.length > 0) && companies.length === 0) {
     metadata.status = 'needs_review'
     metadata.partial = false
     metadata.error = {
@@ -348,16 +530,26 @@ async function normalizeResult({ payload, aiJson, aiResult, companyEnrichmentSer
   }
 
   metadata.grounding = {
-    candidateCount: candidateCompanies.length,
+    aiCandidateCount: aiCandidates.length,
+    providerCandidateCount: providerCandidates.length,
+    candidateCount: mergedCandidates.length,
     groundedCount: companies.length,
     evidenceHostCount: evidenceIndex.hosts.size,
     evidenceNameCount: evidenceIndex.names.size
   }
 
+  metadata.resultPolicy = {
+    requestedCount: searchPlan.requestedCount,
+    candidatePoolTarget: searchPlan.candidatePoolTarget,
+    minimumQualifiedResults: searchPlan.minimumQualifiedResults,
+    displayPolicy: searchPlan.displayPolicy,
+    displayedCount: companies.length
+  }
+
   if (companyEnrichmentService && typeof companyEnrichmentService.enrichCompanies === 'function') {
     const enrichment = await companyEnrichmentService.enrichCompanies(companies, {
       country: payload.country,
-      maxResults: payload.maxResults,
+      maxResults: Math.min(searchPlan.requestedCount, companies.length),
       existingVerificationCalls: metadata.verificationCalls || []
     })
     companies = enrichment.companies.map((company) => ({
@@ -370,6 +562,7 @@ async function normalizeResult({ payload, aiJson, aiResult, companyEnrichmentSer
       ...enrichment.verificationCalls
     ]
     metadata.enrichmentCalls = enrichment.enrichmentCalls
+    metadata.resultPolicy.displayedCount = companies.length
   }
 
   const createdAt = new Date().toISOString()
@@ -429,7 +622,13 @@ export function createSimilarCompanyService({
   tools = [],
   promptStorage,
   prompt = SIMILAR_COMPANY_PROMPT,
-  companyEnrichmentService
+  companyEnrichmentService,
+  requestBudgetMs = 0,
+  maxIterations = 0,
+  aiTimeoutMs = 0,
+  maxTokens = 0,
+  maxToolCalls = 0,
+  toolTimeoutMs = 0
 } = {}) {
   if (!aiAgent || typeof aiAgent.executeTask !== 'function') {
     throw new Error('createSimilarCompanyService requires an aiAgent with executeTask.')
@@ -449,8 +648,8 @@ export function createSimilarCompanyService({
       const industry = normalizeText(payload.industry || payload.sampleCompany?.industry)
       const targetMarket = normalizeText(payload.targetMarket || payload.sampleCompany?.targetMarket)
       const country = normalizeText(payload.country || payload.sampleCompany?.country)
-      const requestedMaxResults = Number(payload.maxResults) > 0 ? Number(payload.maxResults) : 20
-      const maxResults = Math.min(requestedMaxResults, 8)
+      const requestedCount = normalizeResultCount(payload.maxResults)
+      const searchPlan = buildSimilarSearchPlan(requestedCount)
 
       const systemPrompt = await resolvePrompt({
         prompt,
@@ -464,7 +663,11 @@ export function createSimilarCompanyService({
           industry,
           targetMarket,
           country,
-          maxResults
+          requestedCount,
+          candidatePoolTarget: searchPlan.candidatePoolTarget,
+          perSearchResults: searchPlan.perSearchResults,
+          maxSearchCalls: searchPlan.maxSearchCalls,
+          maxResults: searchPlan.candidatePoolTarget
         }
       })
 
@@ -482,23 +685,42 @@ export function createSimilarCompanyService({
               targetMarket
             },
             country,
-            maxResults
+            requestedCount,
+            candidatePoolTarget: searchPlan.candidatePoolTarget,
+            perSearchResults: searchPlan.perSearchResults
           }),
           tools,
-          maxIterations: 4,
-          temperature: 0.2
+          maxIterations: maxIterations > 0 ? Math.min(maxIterations, searchPlan.maxIterations) : searchPlan.maxIterations,
+          temperature: 0.2,
+          deadlineMs: requestBudgetMs,
+          timeoutMs: aiTimeoutMs,
+          maxTokens,
+          maxToolCalls: maxToolCalls > 0 ? Math.min(maxToolCalls, searchPlan.maxToolCalls) : searchPlan.maxToolCalls,
+          toolTimeoutMs
         })
       } catch (error) {
         const collectedToolCalls = Array.isArray(error?.toolCalls) && error.toolCalls.length > 0
           ? error.toolCalls
-          : await runProviderFallback(tools, { companyName, industry, country, maxResults })
-        const partialJson = buildPartialAiJson(collectedToolCalls, { website }, maxResults)
+          : []
+        const fallbackCandidateCount = countQualifiedProviderCandidates(collectedToolCalls, { website })
+        const fallbackCalls = fallbackCandidateCount < searchPlan.candidatePoolTarget
+          ? await runProviderFallback(tools, {
+              companyName,
+              industry,
+              country,
+              maxResults: searchPlan.perSearchResults,
+              maxCalls: searchPlan.maxSearchCalls,
+              existingQueries: collectedToolCalls.map((call) => call.arguments?.query).filter(Boolean)
+            })
+          : []
+        const allToolCalls = [...collectedToolCalls, ...fallbackCalls]
+        const partialJson = buildPartialAiJson(allToolCalls, { website }, searchPlan.candidatePoolTarget)
         const hasEvidence = partialJson.companies.length > 0
 
         aiResult = {
           finalText: '',
           parsedJson: partialJson,
-          toolCalls: collectedToolCalls,
+          toolCalls: allToolCalls,
           iterations: error.iterations || 0,
           messages: error.messages || [],
           status: hasEvidence ? 'partial' : 'failed',
@@ -516,6 +738,24 @@ export function createSimilarCompanyService({
         }
       }
 
+      const existingProviderCandidates = countQualifiedProviderCandidates(aiResult?.toolCalls, { website })
+      if (existingProviderCandidates.length < searchPlan.candidatePoolTarget) {
+        const fallbackCalls = await runProviderFallback(tools, {
+          companyName,
+          industry,
+          country,
+          maxResults: searchPlan.perSearchResults,
+          maxCalls: searchPlan.maxSearchCalls,
+          existingQueries: (aiResult?.toolCalls || []).map((call) => call.arguments?.query).filter(Boolean)
+        })
+        if (fallbackCalls.length > 0) {
+          aiResult = {
+            ...aiResult,
+            toolCalls: [...(aiResult?.toolCalls || []), ...fallbackCalls]
+          }
+        }
+      }
+
       const result = await normalizeResult({
         payload: {
           companyName,
@@ -525,7 +765,7 @@ export function createSimilarCompanyService({
           targetMarket,
           country
         },
-        aiJson: readAiJson(aiResult) || buildPartialAiJson(aiResult?.toolCalls, { website }, maxResults),
+        aiJson: readAiJson(aiResult) || buildPartialAiJson(aiResult?.toolCalls, { website }, searchPlan.candidatePoolTarget),
         aiResult: {
           ...aiResult,
           prompt: {
@@ -533,7 +773,8 @@ export function createSimilarCompanyService({
             rendered: systemPrompt
           }
         },
-        companyEnrichmentService
+        companyEnrichmentService,
+        searchPlan
       })
 
       return {

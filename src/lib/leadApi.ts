@@ -338,6 +338,14 @@ export interface SimilarCompanyResponse {
     finalText?: string
     parsedJson?: unknown
     iterations?: number
+    resultPolicy?: {
+      requestedCount?: number
+      candidatePoolTarget?: number
+      minimumQualifiedResults?: number
+      displayPolicy?: string
+      verificationTarget?: number
+      displayedCount?: number
+    }
   }
   error?: string | Record<string, unknown> | null
 }

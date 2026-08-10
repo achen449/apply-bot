@@ -5,8 +5,10 @@ export function createTavilyAdapter({ apiKey, apiKeys = [] }) {
   const keys = [...new Set([apiKey, ...apiKeys].filter(Boolean))]
 
   return {
+    available: keys.length > 0,
     async search(queryConfig) {
       const query = getQueryText(queryConfig)
+      const maxResults = Math.min(Math.max(Number.parseInt(queryConfig?.maxResults, 10) || 8, 1), 20)
       if (!keys.length || !query) {
         return []
       }
@@ -22,13 +24,13 @@ export function createTavilyAdapter({ apiKey, apiKeys = [] }) {
             api_key: key,
             query,
             search_depth: 'advanced',
-            max_results: 8,
+            max_results: maxResults,
             include_raw_content: true,
             topic: 'general'
           })
         })
 
-        return (data.results || []).map((result) => buildProviderSearchResult('tavily', queryConfig, {
+        return (data.results || []).slice(0, maxResults).map((result) => buildProviderSearchResult('tavily', queryConfig, {
           title: result.title || '',
           url: result.url || '',
           snippet: result.content || '',

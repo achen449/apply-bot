@@ -14,15 +14,17 @@ export function createBraveAdapter({ apiKey, apiKeys = [] }) {
   }
 
   return {
+    available: keys.length > 0,
     async search(queryConfig) {
       const query = getQueryText(queryConfig)
+      const maxResults = Math.min(Math.max(Number.parseInt(queryConfig?.maxResults, 10) || 8, 1), 20)
       if (!keys.length || !query) {
         return []
       }
 
       for (const key of keys) {
         try {
-        const data = await fetchWithToken(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=8`, key)
+        const data = await fetchWithToken(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${maxResults}`, key)
 
         const webResults = (data.web?.results || []).map((result) => buildProviderSearchResult('brave', queryConfig, {
           title: result.title || '',
@@ -85,7 +87,7 @@ export function createBraveAdapter({ apiKey, apiKeys = [] }) {
           })
         }).filter((result) => result.url && result.title)
 
-        return [...webResults, ...localResults]
+        return [...webResults, ...localResults].slice(0, maxResults)
         } catch (error) {
           console.error('Brave search failed:', error.message)
         }

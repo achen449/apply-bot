@@ -35,6 +35,19 @@ function buildCompanyResult(overrides = {}) {
   }
 }
 
+function buildProviderSearchCall(results, provider = 'tavily', query = 'industrial energy buyers') {
+  return {
+    name: 'search_web',
+    arguments: { provider, query, maxResults: results.length },
+    result: {
+      ok: true,
+      provider,
+      query,
+      results
+    }
+  }
+}
+
 const resolvePublicTestHost = async () => [{ address: '93.184.216.34', family: 4 }]
 
 test('company normalizer removes article-like results and deduplicates official domains', () => {
@@ -268,6 +281,50 @@ test('verify_company tool reports provider failures as failed tool calls', async
   assert.equal(result.error.code, 'google_maps_verification_failed')
 })
 
+test('search_web forwards the requested candidate count to the provider adapter', async () => {
+  let receivedConfig
+  const [searchTool] = createLeadAITools({
+    tavilyAdapter: {
+      async search(config) {
+        receivedConfig = config
+        return Array.from({ length: 15 }, (_, index) => ({
+          title: `Energy Buyer ${index + 1}`,
+          url: `https://buyer-${index + 1}.example`,
+          snippet: 'Energy storage OEM buyer that procures industrial assemblies.',
+          provider: 'tavily'
+        }))
+      }
+    },
+    braveAdapter: { async search() { return [] } }
+  })
+
+  const result = await searchTool.execute({
+    query: 'energy storage buyers',
+    provider: 'tavily',
+    maxResults: 15
+  })
+
+  assert.equal(receivedConfig.maxResults, 15)
+  assert.equal(result.results.length, 15)
+})
+
+test('search_web falls back to an available provider when the requested provider is not configured', async () => {
+  const [searchTool] = createLeadAITools({
+    tavilyAdapter: { available: false, async search() { throw new Error('Tavily should not be called') } },
+    braveAdapter: {
+      available: true,
+      async search() {
+        return [{ title: 'Brave Buyer', url: 'https://brave-buyer.example', snippet: 'Buyer evidence', provider: 'brave' }]
+      }
+    }
+  })
+
+  const result = await searchTool.execute({ query: 'energy buyers', provider: 'tavily', maxResults: 1 })
+  assert.equal(result.ok, true)
+  assert.equal(result.provider, 'brave')
+  assert.equal(result.results[0].title, 'Brave Buyer')
+})
+
 test('Lead Finder excludes provider companies whose observed location conflicts with the requested country', async () => {
   const service = createLeadFinderService({
     aiAgent: {
@@ -310,6 +367,46 @@ test('Lead Finder excludes provider companies whose observed location conflicts 
   })
 
   assert.deepEqual(result.workspace.companies.map((company) => company.name), ['US Energy Systems'])
+})
+
+test('Lead Finder keeps candidate-pool and display limits explicit instead of defaulting shortlist to five', async () => {
+  const service = createLeadFinderService({
+    aiAgent: {
+      async executeTask() {
+        return {
+          parsedJson: { companies: [] },
+          finalText: '',
+          toolCalls: [{
+            name: 'search_web',
+            arguments: { provider: 'brave', query: 'industrial energy buyers' },
+            result: {
+              ok: true,
+              provider: 'brave',
+              results: Array.from({ length: 25 }, (_, index) => ({
+                title: `Industrial Buyer ${index + 1}`,
+                url: `https://industrial-buyer-${index + 1}.example`,
+                snippet: 'Industrial energy storage OEM buyer in Fremont, United States that procures equipment.'
+              }))
+            }
+          }],
+          status: 'completed',
+          partial: false
+        }
+      }
+    }
+  })
+
+  const result = await service.discoverWorkspace({
+    industry: 'industrial connectors',
+    country: 'United States',
+    mode: 'standard'
+  })
+
+  assert.equal(result.metadata.resultPolicy.requestedCount, 10)
+  assert.equal(result.metadata.resultPolicy.candidatePoolTarget, 20)
+  assert.equal(result.workspace.companies.length, 20)
+  assert.equal(result.candidatePool.length, 20)
+  assert.equal(result.shortlist.length, 5)
 })
 
 test('research run contract sets a 60-day expiry and prunes only expired runs', () => {
@@ -697,6 +794,86 @@ test('Google Maps search can enrich public email and preserves source page', asy
   }
 })
 
+test('Google Maps email enrichment processes every returned result instead of a hidden ten-item cap', async () => {
+  let enrichmentCount = 0
+  const app = express()
+  app.use(express.json())
+  app.use('/api', createLeadSupportRouter({
+    googleMapsSearchService: {
+      async search() {
+        return {
+          query: 'energy buyers',
+          count: 12,
+          results: Array.from({ length: 12 }, (_, index) => ({
+            title: `Energy Buyer ${index + 1}`,
+            url: `https://buyer-${index + 1}.example`,
+            address: 'Fremont, United States'
+          }))
+        }
+      }
+    },
+    websiteContactEnrichmentService: {
+      async enrich({ website }) {
+        enrichmentCount += 1
+        return {
+          status: 'no_public_email',
+          contactEmails: [],
+          emails: [],
+          contactPages: [`${website}/contact`],
+          evidence: []
+        }
+      }
+    },
+    providerAvailability: { googleMaps: { available: true, missingEnvVars: [] } },
+    researchRunsStorage: { async save() {} }
+  }))
+
+  const server = await new Promise((resolve) => {
+    const instance = app.listen(0, () => resolve(instance))
+  })
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/google-maps/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: 'energy buyers', filters: { maxResults: 20, includeEmails: true } })
+    })
+    const payload = await response.json()
+    assert.equal(response.status, 200)
+    assert.equal(payload.results.length, 12)
+    assert.equal(payload.enrichment.attempted, 12)
+    assert.equal(enrichmentCount, 12)
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
+test('Google Maps batch verification reports oversized input instead of silently dropping companies', async () => {
+  const app = express()
+  app.use(express.json())
+  app.use('/api', createLeadSupportRouter({
+    googleMapsSearchService: {},
+    providerAvailability: { googleMaps: { available: true, missingEnvVars: [] } }
+  }))
+
+  const server = await new Promise((resolve) => {
+    const instance = app.listen(0, () => resolve(instance))
+  })
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/lead-workspaces/batch-verify-csv`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ companies: Array.from({ length: 51 }, (_, index) => ({ name: `Company ${index + 1}` })) })
+    })
+    const payload = await response.json()
+    assert.equal(response.status, 400)
+    assert.equal(payload.code, 'batch_limit_exceeded')
+    assert.equal(payload.requestedCount, 51)
+    assert.equal(payload.maxAllowed, 50)
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
 test('main similar-company route preserves needs_review status in the saved run', async () => {
   let savedRun
   const app = express()
@@ -745,6 +922,68 @@ test('main similar-company route preserves needs_review status in the saved run'
   }
 })
 
+test('legacy and current similar-company routes share the requested-count contract', async () => {
+  const receivedCounts = []
+  const similarCompanyService = {
+    async findSimilarCompanies(payload) {
+      receivedCounts.push(payload.maxResults)
+      return {
+        status: 'completed',
+        partial: false,
+        sampleCompany: payload,
+        results: [],
+        companies: [],
+        metadata: {
+          status: 'completed',
+          resultPolicy: {
+            requestedCount: payload.maxResults,
+            candidatePoolTarget: payload.maxResults * 2,
+            displayedCount: 0
+          },
+          searchCalls: [],
+          verificationCalls: [],
+          enrichmentCalls: []
+        }
+      }
+    }
+  }
+  const app = express()
+  app.use(express.json())
+  const providerAvailability = {
+    tavily: { available: false, missingEnvVars: ['TAVILY_API_KEY'] },
+    brave: { available: true, missingEnvVars: [] },
+    ai: { available: true, missingEnvVars: [] }
+  }
+  const routeConfig = {
+    similarCompanyService,
+    companySimilarityService: similarCompanyService,
+    researchRunsStorage: { async save() {} },
+    providerAvailability
+  }
+  app.use('/api', createApiRouter(routeConfig))
+  app.use('/api', createLeadSupportRouter(routeConfig))
+
+  const server = await new Promise((resolve) => {
+    const instance = app.listen(0, () => resolve(instance))
+  })
+  try {
+    for (const endpoint of ['/api/similar-company', '/api/companies/find-similar']) {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ company: { name: 'Enphase Energy' }, topN: 15 })
+      })
+      const payload = await response.json()
+      assert.equal(response.status, 200)
+      assert.equal(payload.metadata.resultPolicy.requestedCount, 15)
+    }
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+  }
+
+  assert.deepEqual(receivedCounts, [15, 15])
+})
+
 test('similar company preserves provider evidence when the AI final response times out', async () => {
   const timeoutError = new Error('AI final response timed out')
   timeoutError.code = 'ai_request_timeout'
@@ -773,6 +1012,9 @@ test('similar company preserves provider evidence when the AI final response tim
   ]
 
   const service = createSimilarCompanyService({
+    requestBudgetMs: 240000,
+    aiTimeoutMs: 120000,
+    maxTokens: 3000,
     aiAgent: {
       async executeTask() {
         throw timeoutError
@@ -803,6 +1045,64 @@ test('similar company preserves provider evidence when the AI final response tim
   assert.equal(result.results[0].company.title, 'APsystems USA')
   assert.equal(result.metadata.searchCalls[0].provider, 'tavily')
   assert.equal(result.metadata.verificationCalls[0].ok, false)
+})
+
+test('similar company builds a larger candidate pool and displays every qualified result', async () => {
+  const buyerResults = Array.from({ length: 21 }, (_, index) => ({
+    title: `Energy Buyer ${index + 1}`,
+    url: `https://energy-buyer-${index + 1}.example`,
+    snippet: 'Energy storage OEM buyer that procures and integrates industrial assemblies.',
+    provider: 'tavily'
+  }))
+  const filteredResults = Array.from({ length: 9 }, (_, index) => ({
+    title: `Connector Product Guide ${index + 1}`,
+    url: `https://guide-${index + 1}.example/article`,
+    snippet: 'Product guide and catalogue for industrial connectors.',
+    provider: 'tavily'
+  }))
+  const allResults = [...buyerResults, ...filteredResults]
+  const toolCalls = Array.from({ length: 4 }, (_, index) => buildProviderSearchCall(
+    allResults.slice(index * 8, index * 8 + 8),
+    index % 2 === 0 ? 'tavily' : 'brave',
+    `energy storage buyers query ${index + 1}`
+  ))
+  let executeArgs
+
+  const service = createSimilarCompanyService({
+    requestBudgetMs: 240000,
+    aiTimeoutMs: 120000,
+    maxTokens: 3000,
+    aiAgent: {
+      async executeTask(args) {
+        executeArgs = args
+        return {
+          finalText: JSON.stringify({ companies: [] }),
+          parsedJson: { companies: [] },
+          toolCalls,
+          iterations: 4,
+          status: 'completed',
+          partial: false
+        }
+      }
+    }
+  })
+
+  const result = await service.findSimilarCompanies({
+    name: 'Enphase Energy',
+    website: 'https://enphase.com',
+    industry: 'solar energy and storage',
+    maxResults: 15
+  })
+
+  assert.match(executeArgs.systemPrompt, /候选池目标：30/)
+  assert.equal(executeArgs.deadlineMs, 240000)
+  assert.equal(executeArgs.timeoutMs, 120000)
+  assert.equal(JSON.parse(executeArgs.userInput).candidatePoolTarget, 30)
+  assert.equal(result.metadata.resultPolicy.requestedCount, 15)
+  assert.equal(result.metadata.resultPolicy.candidatePoolTarget, 30)
+  assert.equal(result.metadata.resultPolicy.displayedCount, 21)
+  assert.equal(result.results.length, 21)
+  assert.equal(result.results.some((item) => item.company.title.includes('Product Guide')), false)
 })
 
 test('similar company rejects AI-only candidates when provider evidence is empty', async () => {

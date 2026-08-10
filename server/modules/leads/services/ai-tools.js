@@ -96,6 +96,9 @@ export function createSearchWebTool({ tavilyAdapter, braveAdapter, timeoutMs = 3
 
   return {
     name: 'search_web',
+    availableProviders: ['tavily', 'brave'].filter((provider) => (
+      (provider === 'brave' ? brave : tavily).available !== false
+    )),
     description: 'Search the public web for compact company, market, and sourcing evidence using Tavily or Brave.',
     parameters: {
       type: 'object',
@@ -116,25 +119,35 @@ export function createSearchWebTool({ tavilyAdapter, braveAdapter, timeoutMs = 3
       }
 
       const provider = normalizeProvider(args.provider)
-      const adapter = provider === 'brave' ? brave : tavily
-      const maxResults = asPositiveInteger(args.maxResults, 5)
+      let selectedProvider = provider
+      let adapter = provider === 'brave' ? brave : tavily
+      if (adapter.available === false) {
+        const fallbackProvider = provider === 'brave' ? 'tavily' : 'brave'
+        const fallbackAdapter = fallbackProvider === 'brave' ? brave : tavily
+        if (fallbackAdapter.available !== false) {
+          selectedProvider = fallbackProvider
+          adapter = fallbackAdapter
+        }
+      }
+      const maxResults = Math.min(asPositiveInteger(args.maxResults, 5), 20)
 
       return withToolTimeout(async () => {
         try {
           const results = await adapter.search({
             query,
-            label: 'web-search'
+            label: 'web-search',
+            maxResults
           })
 
           return {
             ok: true,
-            provider,
+            provider: selectedProvider,
             query,
             results: (results || []).slice(0, maxResults).map(compactSearchResult)
           }
         } catch (error) {
-          return compactError('provider_search_failed', `${provider} search failed.`, {
-            provider,
+          return compactError('provider_search_failed', `${selectedProvider} search failed.`, {
+            provider: selectedProvider,
             message: error.message || 'Unknown provider error'
           })
         }

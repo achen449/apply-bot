@@ -1,5 +1,6 @@
 import express from 'express'
 import { createResearchRun, getPartStatus } from '../shared/research-run-contract.js'
+import { createSimilarCompanyHandler } from './similar-company-handler.js'
 
 function hasText(value) {
   return typeof value === 'string' && value.trim().length > 0
@@ -151,50 +152,9 @@ function buildLeadFinderParts(result, queryInput) {
       title: 'Lead report',
       status: result.status || metadata.status || 'needs_review',
       companyCount: companies.length,
+      resultPolicy: metadata.resultPolicy || null,
       results: companies,
       summary: result.workspace?.summary || {}
-    }
-  ]
-}
-
-function buildSimilarCompanyParts(result, queryInput) {
-  const metadata = result.metadata || {}
-  const searchCalls = metadata.searchCalls || []
-  const verificationCalls = metadata.verificationCalls || []
-  const enrichmentCalls = metadata.enrichmentCalls || []
-  const reportStatus = result.status || metadata.status || (result.error ? 'needs_review' : 'completed')
-
-  return [
-    {
-      workflow: 'similar-company',
-      part: 'discovery',
-      title: 'Similar-company discovery',
-      status: getPartStatus({ attempted: searchCalls.length, succeeded: searchCalls.filter((call) => call.ok !== false).length, failed: countCallFailures(searchCalls), empty: searchCalls.length === 0 }),
-      prompt: metadata.prompt,
-      searchCalls,
-      queryInput
-    },
-    {
-      workflow: 'similar-company',
-      part: 'map-verification',
-      title: 'Google Maps verification',
-      status: getPartStatus({ attempted: verificationCalls.length, succeeded: verificationCalls.filter((call) => call.ok !== false).length, failed: countCallFailures(verificationCalls), empty: verificationCalls.length === 0 }),
-      verificationCalls
-    },
-    {
-      workflow: 'similar-company',
-      part: 'contact-enrichment',
-      title: 'Official website contact enrichment',
-      status: getPartStatus({ attempted: enrichmentCalls.length, succeeded: enrichmentCalls.filter((call) => call.status === 'completed' || call.status === 'no_public_email').length, failed: enrichmentCalls.filter((call) => call.status === 'unavailable' || call.status === 'enrichment_failed').length, empty: enrichmentCalls.length === 0 }),
-      enrichmentCalls
-    },
-    {
-      workflow: 'similar-company',
-      part: 'report',
-      title: 'Similar-company report',
-      status: reportStatus,
-      results: result.results || [],
-      errors: result.error ? [result.error] : []
     }
   ]
 }
@@ -345,6 +305,15 @@ export function createApiRouter({
     }
   }
 
+  const handleSimilarCompany = createSimilarCompanyHandler({
+    companySimilarityService: similarCompanyService,
+    providerAvailability,
+    persistRun,
+    sendMissingEnvResponse,
+    sendMissingService: (res) => sendMissingAiResponse(res, providerAvailability),
+    sendServiceError
+  })
+
   async function investigateOsint(subject, mode) {
     if (!osintService) {
       if (fallbackOsintService && typeof fallbackOsintService.research === 'function') {
@@ -454,6 +423,7 @@ export function createApiRouter({
         verificationCalls: result.metadata?.verificationCalls || [],
         enrichmentCalls: result.metadata?.enrichmentCalls || [],
         queryInput,
+        resultPolicy: result.metadata?.resultPolicy || null,
         workspace: result.workspace,
         results: result.results || [],
         errors: result.metadata?.error ? [result.metadata.error] : [],
@@ -471,77 +441,8 @@ export function createApiRouter({
     }
   })
 
-  // POST /api/similar-company
-  router.post('/similar-company', async (req, res) => {
-    try {
-      const { company, topN = 10 } = req.body || {}
-
-      if (!providerAvailability?.tavily?.available) {
-        return sendMissingEnvResponse(
-          res,
-          'TAVILY_API_KEY is required for similar company search.',
-          providerAvailability?.tavily?.missingEnvVars || ['TAVILY_API_KEY']
-        )
-      }
-
-      if (!similarCompanyService) {
-        return sendMissingAiResponse(res, providerAvailability)
-      }
-
-      if (!hasText(company?.name)) {
-        return res.status(400).json({
-          success: false,
-          code: 'invalid_payload',
-          error: 'company.name is required'
-        })
-      }
-
-      const result = await similarCompanyService.findSimilarCompanies({
-        ...company,
-        maxResults: toPositiveInteger(topN, 10)
-      })
-
-      const queryInput = {
-        sampleCompany: company,
-        topN: toPositiveInteger(topN, 10)
-      }
-      const run = createResearchRun({
-        id: `similar-company-${Date.now()}`,
-        workflow: 'similar-company',
-        title: `Similar Company: ${company.name}`,
-        status: result.status || result.metadata?.status || (result.error ? 'needs_review' : 'completed'),
-        part: 'report',
-        prompt: result.metadata?.prompt || null,
-        searchCalls: result.metadata?.searchCalls || [],
-        verificationCalls: result.metadata?.verificationCalls || [],
-        enrichmentCalls: result.metadata?.enrichmentCalls || [],
-        queryInput,
-        sampleCompany: result.sampleCompany,
-        results: result.results || [],
-        errors: result.error ? [result.error] : [],
-        parts: buildSimilarCompanyParts(result, queryInput)
-      })
-      const persistence = await persistRun(run)
-
-      return res.json({
-        success: true,
-        configured: true,
-        status: run.status,
-        partial: Boolean(result.partial),
-        runId: run.id,
-        researchRun: run,
-        recommendations: result.results || [],
-        results: result.results || [],
-        companies: result.companies || [],
-        metadata: result.metadata || {},
-        error: result.error || null,
-        persistence
-      })
-    } catch (error) {
-      console.error('Error in similar-company:', error)
-      return sendServiceError(res, error, 'Failed to find similar companies')
-    }
-  })
+  // POST /api/similar-company (legacy compatibility route; shared handler)
+  router.post('/similar-company', handleSimilarCompany)
 
   // POST /api/osint
   router.post('/osint', async (req, res) => {
@@ -794,6 +695,7 @@ export function createApiRouter({
         verificationCalls: result.metadata?.verificationCalls || [],
         enrichmentCalls: result.metadata?.enrichmentCalls || [],
         queryInput,
+        resultPolicy: result.metadata?.resultPolicy || null,
         workspace: result.workspace,
         results: result.results || [],
         parts: buildLeadFinderParts(result, queryInput)

@@ -5,8 +5,8 @@ import { Button } from '@/components/ui/button'
 import { findSimilarCompanies, type SimilarCompanyResult } from '@/lib/leadApi'
 
 function buildWorkflowHint(message: string) {
-  if (message.includes('TAVILY_API_KEY')) {
-    return `${message} Similar-company discovery runs through the server-side Tavily route, so configure TAVILY_API_KEY in Vercel or the local Node service before retrying.`
+  if (message.includes('TAVILY_API_KEY') || message.includes('BRAVE_API_KEY')) {
+    return `${message} Similar-company discovery runs through the server-side search providers, so configure TAVILY_API_KEY or BRAVE_API_KEY in Vercel or the local Node service before retrying.`
   }
 
   return message
@@ -65,6 +65,7 @@ export default function SimilarCompanyFinder() {
   const [hasSearched, setHasSearched] = useState(false)
   const [promptPreview, setPromptPreview] = useState('')
   const [queryPreview, setQueryPreview] = useState<string[]>([])
+  const [resultPolicy, setResultPolicy] = useState<{ requestedCount?: number; candidatePoolTarget?: number; displayedCount?: number } | null>(null)
   const [runId, setRunId] = useState('')
   const [runStatus, setRunStatus] = useState('')
 
@@ -76,6 +77,7 @@ export default function SimilarCompanyFinder() {
     setIsSearching(true)
     setRunId('')
     setRunStatus('')
+    setResultPolicy(null)
 
     try {
       const data = await findSimilarCompanies({ name, website, industry, description }, Number.parseInt(topN, 10))
@@ -84,6 +86,7 @@ export default function SimilarCompanyFinder() {
       setRunStatus(data.status || '')
       setPromptPreview(data.metadata?.prompt?.rendered || '')
       setQueryPreview((data.metadata?.searchCalls || []).map((call) => call.query || '').filter(Boolean))
+      setResultPolicy(data.metadata?.resultPolicy || null)
     } catch (searchError) {
       console.error(searchError)
       const message = searchError instanceof Error ? searchError.message : '相似公司搜索失败'
@@ -145,7 +148,7 @@ export default function SimilarCompanyFinder() {
               查找相似公司
             </Button>
             <div className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm text-stone-700 dark:border-stone-700 dark:bg-stone-900/60 dark:text-stone-300">
-              依赖后端 `POST /api/companies/find-similar`。如果提示缺少环境变量，请在 Vercel 或本地服务端设置 `TAVILY_API_KEY`，不要把密钥写进前端。
+              依赖后端 `POST /api/companies/find-similar`。如果提示缺少环境变量，请在 Vercel 或本地服务端设置 `TAVILY_API_KEY` 或 `BRAVE_API_KEY`，不要把密钥写进前端。
             </div>
             {error ? <div className="text-sm text-red-600 dark:text-red-400">{error}</div> : null}
           </form>
@@ -205,7 +208,10 @@ export default function SimilarCompanyFinder() {
               <Sparkles className="h-5 w-5 text-primary-600" />
               推荐结果
             </CardTitle>
-            <CardDescription>按轻量关键词相似度排序，并保留来源网站、provider、query label、公开描述和官网线索。</CardDescription>
+            <CardDescription>
+              按轻量关键词相似度排序，并保留来源网站、provider、query label、公开描述和官网线索。
+              {resultPolicy ? ` 本次请求 ${resultPolicy.requestedCount || 0} 家，候选池 ${resultPolicy.candidatePoolTarget || 0} 家，筛选后展示 ${resultPolicy.displayedCount ?? results.length} 家。` : ''}
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
