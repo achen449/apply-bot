@@ -1298,6 +1298,20 @@ test('GistService reads the raw URL when GitHub truncates a large Gist file', as
   assert.equal(rawUrl, 'https://gist.githubusercontent.com/example/raw/customer-data.json')
 })
 
+test('GistService does not send an unsupported conditional header when updating a Gist', async () => {
+  const service = new GistService('gist-test', 'token-test', 'customer-data.json')
+  let updateArguments
+  service.octokit.gists = {
+    async update(args) {
+      updateArguments = args
+      return { data: { files: args.files } }
+    }
+  }
+
+  await service.updateGist({ researchRuns: [] }, { ifMatch: 'etag-test' })
+  assert.equal(updateArguments.headers, undefined)
+})
+
 test('GistService exposes malformed Gist JSON as a typed storage error', async () => {
   const service = new GistService('gist-test', 'token-test', 'customer-data.json')
   service.octokit.gists = {

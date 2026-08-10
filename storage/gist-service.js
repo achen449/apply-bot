@@ -270,18 +270,20 @@ class GistService {
    * @param {Object} data - Data to save
    * @returns {Promise<Object>} Updated Gist response
    */
-  async updateGist(data, { ifMatch = this.etag } = {}) {
+  async updateGist(data, _options = {}) {
     try {
       const content = JSON.stringify(normalizeGistData(data), null, 2);
 
+      // GitHub's Gist update endpoint rejects conditional headers such as
+      // If-Match for unsafe requests. Keep the local write lock and retry
+      // handling, but do not send an unsupported header to GitHub.
       const response = await this.octokit.gists.update({
         gist_id: this.gistId,
         files: {
           [this.filename]: {
             content
           }
-        },
-        ...(ifMatch ? { headers: { 'If-Match': ifMatch } } : {})
+        }
       });
       const { data: responseData } = response;
 

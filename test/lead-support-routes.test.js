@@ -139,6 +139,48 @@ test('gist customer data service reports missing env without crashing', () => {
   })
 })
 
+test('gist customer data service reads the raw URL when the API marks a file truncated', async () => {
+  const rawDocument = JSON.stringify({
+    customers: [{ id: 'raw-customer' }],
+    leads: [],
+    leadWorkspaces: [],
+    countries: [],
+    keywords: [],
+    searchKeywords: [],
+    companies: [],
+    websites: [],
+    evidence: [],
+    providerMetadata: {}
+  })
+  const service = createGistCustomerDataService({
+    gistId: 'gist-123',
+    githubToken: 'secret-token',
+    fileName: 'customer-data.json',
+    fetchImpl: async (url) => {
+      if (url.includes('api.github.com')) {
+        return createJsonResponse(200, {
+          files: {
+            'customer-data.json': {
+              content: '{"customers":[{"id":"truncated',
+              truncated: true,
+              raw_url: 'https://gist.githubusercontent.com/example/raw/customer-data.json'
+            }
+          }
+        })
+      }
+
+      return {
+        ok: true,
+        status: 200,
+        async text() { return rawDocument }
+      }
+    }
+  })
+
+  const result = await service.readCustomerData()
+  assert.deepEqual(result.data.customers, [{ id: 'raw-customer' }])
+})
+
 test('gist customer data service reads and updates the configured gist file while preserving unrelated fields', async () => {
   const requests = []
   const existingDocument = {
@@ -1083,5 +1125,4 @@ test('lead support and export routers prove successful gist-backed read update a
     })
   }
 })
-
 
