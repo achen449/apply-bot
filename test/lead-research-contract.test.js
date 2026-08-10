@@ -1263,6 +1263,66 @@ test('GistService removes expired research runs and assigns expiry to legacy rec
   assert.equal(updates.length, 1)
 })
 
+test('GistService reads the raw URL when GitHub truncates a large Gist file', async () => {
+  const service = new GistService('gist-test', 'token-test', 'customer-data.json')
+  const rawContent = JSON.stringify({
+    prompts: { 'similar-company': 'raw prompt content' }
+  })
+  let rawUrl = ''
+
+  service.octokit.gists = {
+    async get() {
+      return {
+        data: {
+          files: {
+            'customer-data.json': {
+              content: '{"prompts":{"similar-company":"truncated',
+              truncated: true,
+              raw_url: 'https://gist.githubusercontent.com/example/raw/customer-data.json'
+            }
+          }
+        }
+      }
+    }
+  }
+  service.fetchImpl = async (url, options) => {
+    rawUrl = url
+    assert.equal(options.headers.Authorization, 'Bearer token-test')
+    return {
+      ok: true,
+      async text() { return rawContent }
+    }
+  }
+
+  assert.equal(await service.getPrompt('similar-company'), 'raw prompt content')
+  assert.equal(rawUrl, 'https://gist.githubusercontent.com/example/raw/customer-data.json')
+})
+
+test('GistService exposes malformed Gist JSON as a typed storage error', async () => {
+  const service = new GistService('gist-test', 'token-test', 'customer-data.json')
+  service.octokit.gists = {
+    async get() {
+      return {
+        data: {
+          files: {
+            'customer-data.json': { content: '{"prompts":' }
+          }
+        }
+      }
+    }
+  }
+
+  await assert.rejects(
+    () => service.getPrompt('similar-company'),
+    (error) => {
+      assert.equal(error.code, 'invalid_gist_json')
+      assert.equal(error.fileName, 'customer-data.json')
+      assert.equal(error.contentLength, 11)
+      return true
+    }
+  )
+})
+
 test('GistService serializes concurrent research-run writes without losing records', async () => {
   const service = new GistService('gist-test', 'token-test', 'customer-data.json')
   let document = { customers: [{ id: 'keep-customer' }], researchRuns: [] }

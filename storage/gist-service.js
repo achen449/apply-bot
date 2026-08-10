@@ -46,6 +46,14 @@ function normalizeGistData(data = {}) {
   };
 }
 
+function createGistError(message, code, details = {}) {
+  const error = new Error(message)
+  error.code = code
+  error.status = 502
+  Object.assign(error, details)
+  return error
+}
+
 class GistService {
   constructor(gistId, token, filename = 'apply-bot-data.json') {
     this.gistId = gistId;
@@ -55,6 +63,7 @@ class GistService {
     this.cache = null;
     this.etag = '';
     this.writeQueue = Promise.resolve();
+    this.fetchImpl = globalThis.fetch;
   }
 
   async withWriteLock(operation) {
@@ -116,9 +125,56 @@ class GistService {
       });
       const { data } = response;
 
-      const filename = data.files[this.filename] ? this.filename : Object.keys(data.files)[0];
-      const content = data.files[filename]?.content || '';
-      this.cache = normalizeGistData(JSON.parse(content));
+      const files = data?.files || {}
+      const filename = files[this.filename] ? this.filename : Object.keys(files)[0];
+      const file = files[filename]
+      if (!file) {
+        throw createGistError(`The configured Gist file ${this.filename} does not exist.`, 'gist_request_failed', {
+          fileName: this.filename
+        })
+      }
+
+      const inlineContent = typeof file.content === 'string' ? file.content : ''
+      let content = inlineContent
+      const mustReadRaw = Boolean(file.truncated || !inlineContent)
+
+      if (mustReadRaw && file.raw_url && typeof this.fetchImpl === 'function') {
+        const rawResponse = await this.fetchImpl(file.raw_url, {
+          headers: {
+            Accept: 'application/json',
+            Authorization: `Bearer ${this.token}`,
+            'User-Agent': 'apply-bot-gist-service'
+          }
+        })
+
+        if (!rawResponse?.ok) {
+          throw createGistError(
+            `GitHub Gist raw file request failed with status ${rawResponse?.status || 'unknown'}.`,
+            'gist_request_failed',
+            { fileName: filename, rawUrl: file.raw_url }
+          )
+        }
+
+        content = await rawResponse.text()
+      }
+
+      let parsed
+      try {
+        parsed = JSON.parse(content)
+      } catch (error) {
+        throw createGistError(
+          `The configured Gist file ${filename} does not contain valid JSON: ${error.message}`,
+          'invalid_gist_json',
+          {
+            fileName: filename,
+            contentLength: content.length,
+            truncated: Boolean(file.truncated),
+            rawUrl: file.raw_url || ''
+          }
+        )
+      }
+
+      this.cache = normalizeGistData(parsed);
       this.etag = response.headers?.etag || response.headers?.ETag || '';
 
       return this.cache;

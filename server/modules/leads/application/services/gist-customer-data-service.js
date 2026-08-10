@@ -113,11 +113,38 @@ function validatePatch(patch) {
   }
 }
 
-async function parseGistResponse(response, fileName) {
+async function parseGistResponse(response, fileName, fetchImpl, githubToken) {
   const payload = await response.json().catch(() => null)
   const file = payload?.files?.[fileName] || payload?.files?.[Object.keys(payload?.files || {})[0]]
 
-  if (!file?.content) {
+  if (!file) {
+    const error = new Error(`The configured Gist file ${fileName} does not exist or has no content.`)
+    error.code = 'gist_request_failed'
+    error.status = 502
+    throw error
+  }
+
+  let content = typeof file.content === 'string' ? file.content : ''
+  if ((file.truncated || !content) && file.raw_url && typeof fetchImpl === 'function') {
+    const rawResponse = await fetchImpl(file.raw_url, {
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${githubToken}`,
+        'User-Agent': 'apply-bot-gist-service'
+      }
+    })
+
+    if (!rawResponse?.ok) {
+      const error = new Error(`GitHub Gist raw file request failed with status ${rawResponse?.status || 'unknown'}.`)
+      error.code = 'gist_request_failed'
+      error.status = 502
+      throw error
+    }
+
+    content = await rawResponse.text()
+  }
+
+  if (!content) {
     const error = new Error(`The configured Gist file ${fileName} does not exist or has no content.`)
     error.code = 'gist_request_failed'
     error.status = 502
@@ -126,9 +153,9 @@ async function parseGistResponse(response, fileName) {
 
   let document
   try {
-    document = JSON.parse(file.content)
-  } catch {
-    const error = new Error('The configured Gist file does not contain valid JSON.')
+    document = JSON.parse(content)
+  } catch (parseError) {
+    const error = new Error(`The configured Gist file does not contain valid JSON: ${parseError.message}`)
     error.code = 'invalid_gist_json'
     error.status = 502
     throw error
@@ -186,7 +213,7 @@ export function createGistCustomerDataService({
   async function readCustomerData() {
     try {
       const response = await requestGist('GET')
-      const parsed = await parseGistResponse(response, fileName)
+      const parsed = await parseGistResponse(response, fileName, fetchImpl, githubToken)
 
       return {
         success: true,
@@ -237,7 +264,7 @@ export function createGistCustomerDataService({
           }
         }
       })
-      const parsed = await parseGistResponse(response, fileName)
+      const parsed = await parseGistResponse(response, fileName, fetchImpl, githubToken)
 
       return {
         success: true,
