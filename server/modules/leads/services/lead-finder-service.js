@@ -13,7 +13,9 @@ import {
 } from './ai-service-utils.js'
 import {
   dedupeCompanyCandidates,
+  deriveCompanyNameFromSearchResult,
   isLikelyBuyerCandidate,
+  isLikelyOfficialCompanyResult,
   matchesTargetCountry
 } from '../shared/company-result-normalizer.js'
 
@@ -100,8 +102,11 @@ function collectCompanyCandidates(aiJson, toolCalls = []) {
     }
 
     for (const item of call.result?.results || []) {
+      if (!isLikelyOfficialCompanyResult(item)) {
+        continue
+      }
       candidates.push({
-        name: item.title,
+        name: deriveCompanyNameFromSearchResult(item),
         website: item.url,
         reason: item.snippet,
         description: item.snippet,
@@ -124,7 +129,7 @@ function collectCompanyCandidates(aiJson, toolCalls = []) {
   return candidates
 }
 
-function buildPartialLeadFinderJson(toolCalls = [], candidatePoolTarget = 20) {
+function buildPartialLeadFinderJson(toolCalls = [], candidatePoolTarget = 20, shortlistTarget = candidatePoolTarget) {
   const companies = []
   const byKey = new Map()
 
@@ -171,8 +176,11 @@ function buildPartialLeadFinderJson(toolCalls = [], candidatePoolTarget = 20) {
   for (const call of Array.isArray(toolCalls) ? toolCalls : []) {
     if (call?.name === 'search_web' && call.result?.ok !== false) {
       for (const result of call.result?.results || []) {
+        if (!isLikelyOfficialCompanyResult(result)) {
+          continue
+        }
         upsertCompany({
-          name: result.title,
+          name: deriveCompanyNameFromSearchResult(result),
           website: result.url,
           address: result.address,
           snippet: result.snippet,
@@ -213,7 +221,7 @@ function buildPartialLeadFinderJson(toolCalls = [], candidatePoolTarget = 20) {
   }
 
   const candidatePool = companies.slice(0, candidatePoolTarget)
-  const shortlist = candidatePool.slice(0, Math.min(5, candidatePool.length))
+  const shortlist = candidatePool.slice(0, Math.min(shortlistTarget, candidatePool.length))
 
   return {
     recommendedSegments: [],
@@ -252,16 +260,36 @@ function toUiCompanies(companies = []) {
   }))
 }
 
-async function enrichWorkspaceResult(result, companyEnrichmentService, payload, mode) {
+function markEnrichmentBudgetPartial(result) {
+  result.status = 'partial'
+  result.partial = true
+  result.workspace.status = 'partial'
+  result.metadata.status = 'partial'
+  result.metadata.partial = true
+  result.metadata.enrichmentBudgetExhausted = true
+  result.metadata.error = result.metadata.error || {
+    code: 'request_budget_exhausted',
+    message: 'Lead discovery returned grounded companies, but the request budget ended before every company could be enriched.'
+  }
+  return result
+}
+
+async function enrichWorkspaceResult(result, companyEnrichmentService, payload, mode, deadlineAt = 0) {
   if (!companyEnrichmentService || typeof companyEnrichmentService.enrichCompanies !== 'function') {
     return result
+  }
+
+  if (deadlineAt && Date.now() + 1000 >= deadlineAt) {
+    return markEnrichmentBudgetPartial(result)
   }
 
   const policy = getLeadFinderResultPolicy(mode)
   const enrichment = await companyEnrichmentService.enrichCompanies(result.workspace.companies, {
     country: payload.country,
-    maxResults: policy.verificationTarget,
-    existingVerificationCalls: result.metadata.verificationCalls || []
+    maxResults: result.workspace.companies.length,
+    existingVerificationCalls: result.metadata.verificationCalls || [],
+    deadlineAt,
+    minimumRemainingMs: 1000
   })
 
   result.workspace.companies = enrichment.companies
@@ -275,9 +303,14 @@ async function enrichWorkspaceResult(result, companyEnrichmentService, payload, 
     ...enrichment.verificationCalls
   ]
   result.metadata.enrichmentCalls = enrichment.enrichmentCalls
+  result.metadata.enrichmentBudgetExhausted = Boolean(enrichment.budgetExhausted)
   result.metadata.resultPolicy = {
     ...policy,
     displayedCount: enrichment.companies.length
+  }
+
+  if (enrichment.budgetExhausted) {
+    markEnrichmentBudgetPartial(result)
   }
 
   return result
@@ -344,7 +377,7 @@ export function createLeadFinderService({
   aiAgent,
   tools = [],
   promptStorage,
-  prompt = LEAD_FINDER_PROMPT,
+  prompt = '',
   requestBudgetMs = 0,
   maxIterationsCap = 0,
   aiTimeoutMs = 0,
@@ -359,6 +392,8 @@ export function createLeadFinderService({
 
   return {
     async discoverWorkspace(payload = {}) {
+      const requestStartedAt = Date.now()
+      const deadlineAt = requestBudgetMs > 0 ? requestStartedAt + requestBudgetMs : 0
       const industry = normalizeText(payload.industry)
       if (!industry) {
         const error = new Error('industry is required')
@@ -408,7 +443,7 @@ export function createLeadFinderService({
           tools,
           maxIterations: effectiveMaxIterations,
           temperature: 0.2,
-          deadlineMs: requestBudgetMs,
+          deadlineMs: deadlineAt ? Math.max(1, deadlineAt - Date.now()) : requestBudgetMs,
           timeoutMs: aiTimeoutMs,
           maxTokens,
           maxToolCalls: effectiveMaxToolCalls,
@@ -445,9 +480,13 @@ export function createLeadFinderService({
         return enrichWorkspaceResult(normalizeWorkspace({
           payload: { ...payload, industry, keywords },
           mode,
-          aiJson: buildPartialLeadFinderJson(partialAiResult.toolCalls, getLeadFinderResultPolicy(mode).candidatePoolTarget),
+          aiJson: buildPartialLeadFinderJson(
+            partialAiResult.toolCalls,
+            getLeadFinderResultPolicy(mode).candidatePoolTarget,
+            getLeadFinderResultPolicy(mode).verificationTarget
+          ),
           aiResult: partialAiResult
-        }), companyEnrichmentService, { ...payload, industry, keywords }, mode)
+        }), companyEnrichmentService, { ...payload, industry, keywords }, mode, deadlineAt)
       }
 
       return enrichWorkspaceResult(normalizeWorkspace({
@@ -461,7 +500,7 @@ export function createLeadFinderService({
             rendered: systemPrompt
           }
         }
-      }), companyEnrichmentService, { ...payload, industry, keywords }, mode)
+      }), companyEnrichmentService, { ...payload, industry, keywords }, mode, deadlineAt)
     }
   }
 }

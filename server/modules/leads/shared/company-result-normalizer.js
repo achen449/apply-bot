@@ -13,6 +13,8 @@ const NON_COMPANY_MARKERS = [
   'list of',
   'supplier directory',
   'company directory',
+  'company listing',
+  'business listing',
   'industry directory',
   'article',
   'blog',
@@ -37,15 +39,53 @@ const NON_COMPANY_PATH_MARKERS = [
   '/guides/',
   '/resources/',
   '/directory/',
+  '/companies.',
+  '/companies/',
   '/supplier-directory/',
   '/product/',
   '/products/',
   '/portfolio-item/',
   '/case-study/',
   '/case-studies/',
+  '/customer/',
+  '/customers/',
+  '/partner/',
+  '/partners/',
+  '/customer-story/',
+  '/customer-stories/',
+  '/success-story/',
+  '/success-stories/',
   '/green-leader/',
   '/wiki/'
 ]
+
+const RESEARCH_DIRECTORY_HOST_MARKERS = [
+  'dnb.com',
+  'company-listing.org',
+  'europages.',
+  'thomasnet.com',
+  'power-technology.com',
+  'electricalsinformed.com',
+  'e-electricity.com'
+]
+
+const NON_OFFICIAL_PROFILE_HOSTS = [
+  'x.com',
+  'twitter.com',
+  'facebook.com',
+  'instagram.com',
+  'linkedin.com',
+  'youtube.com',
+  'youtu.be',
+  'tiktok.com'
+]
+
+const LISTING_TITLE_PATTERN = /(?:\b(?:top|best)\s+\d+|\bupdated\b.*\bbest\b|manufacturers?\s+(?:and\s+suppliers?\s+)?in\b|companies?\s+in\b|supplier directory|company directory|company listing|business listings?|buyers? guide|\blist of\b|\bdirectory\b|\bfind\b.*\bcompanies\b)/i
+const NON_OPERATING_ENTITY_PATTERN = /\b(?:industry association|trade association|federation|industry council|supplier directory|manufacturer directory|company directory|information resource|resource portal|community portal|online library|product library)\b/i
+const NON_OPERATING_NAME_PATTERN = /\b(?:associations?|federation|industry council|trade body|industry body)\b/i
+const SLOGAN_TITLE_PATTERN = /^(?:introducing\b|discover\b|welcome\b|switch it on\b|the information resource\b|home[-\s]+[a-z])/i
+const NON_OPERATING_ORGANIZATION_SIGNAL_PATTERN = /\b(?:membership|member companies|member organisations?|member organizations?|representing (?:the|our|more than|over)|voice of the .{0,50} industry|trade body|industry body|advocacy|policy makers?|non-profit|not-for-profit)\b/i
+const SEO_TITLE_DESCRIPTOR_PATTERN = /\b(?:led |solar |industrial |commercial )?(?:lighting |energy |electrical )?(?:manufacturer|supplier|company|solutions?|systems?|products?)\b/i
 
 function hasText(value) {
   return typeof value === 'string' && value.trim().length > 0
@@ -67,6 +107,7 @@ const COUNTRY_TOKENS = {
   australia: ['australia'],
   india: ['india'],
   japan: ['japan'],
+  china: ['china', 'people\'s republic of china', 'prc', 'guangzhou', 'shenzhen', 'shanghai', 'beijing'],
   'south korea': ['south korea', 'republic of korea', 'korea'],
   'united kingdom': ['united kingdom', 'uk', 'england', 'scotland', 'wales']
 }
@@ -85,6 +126,31 @@ export function matchesTargetCountry(country, locationText) {
 
   if (!expectedCountry || !observedLocation) {
     return true
+  }
+
+  const europeTarget = /\b(?:europe|european union|eu)\b/.test(expectedCountry)
+  if (europeTarget) {
+    const europeanTokens = [
+      'europe', 'european union', 'austria', 'austrian', 'belgium', 'belgian', 'bulgaria', 'bulgarian',
+      'croatia', 'croatian', 'cyprus', 'cypriot', 'czech', 'denmark', 'danish', 'estonia', 'estonian',
+      'finland', 'finnish', 'france', 'french', 'germany', 'german', 'greece', 'greek', 'hungary', 'hungarian',
+      'ireland', 'irish', 'italy', 'italian', 'latvia', 'latvian', 'lithuania', 'lithuanian', 'luxembourg',
+      'malta', 'maltese', 'netherlands', 'dutch', 'norway', 'norwegian', 'poland', 'polish', 'portugal',
+      'portuguese', 'romania', 'romanian', 'slovakia', 'slovak', 'slovenia', 'slovenian', 'spain', 'spanish',
+      'sweden', 'swedish', 'switzerland', 'swiss', 'united kingdom', 'british', 'england', 'scotland', 'wales'
+    ]
+    const nonEuropeanTokens = [
+      'china', 'chinese', 'guangzhou', 'shenzhen', 'shanghai', 'beijing', 'united states', 'usa', 'u.s.',
+      'american', 'canada', 'canadian', 'mexico', 'mexican', 'australia', 'australian', 'india', 'indian',
+      'japan', 'japanese', 'south korea', 'korean', 'singapore', 'singaporean', 'malaysia', 'malaysian',
+      'vietnam', 'vietnamese', 'brazil', 'brazilian'
+    ]
+    if (europeanTokens.some((token) => observedLocation.includes(token))) {
+      return true
+    }
+    if (nonEuropeanTokens.some((token) => observedLocation.includes(token))) {
+      return false
+    }
   }
 
   const expectedTokens = COUNTRY_TOKENS[expectedCountry] || [expectedCountry]
@@ -149,6 +215,170 @@ export function likelyOfficialWebsite(value) {
   }
 }
 
+function websiteHost(value) {
+  try {
+    return new URL(value).hostname.replace(/^www\./i, '').toLowerCase()
+  } catch {
+    return ''
+  }
+}
+
+function domainBrand(value) {
+  const host = websiteHost(value)
+  const parts = host.split('.').filter(Boolean)
+  const countryCodeSecondLevel = new Set(['ac', 'co', 'com', 'edu', 'gov', 'net', 'org'])
+  const usesCountryCodeSecondLevel = parts.at(-1)?.length === 2 && countryCodeSecondLevel.has(parts.at(-2))
+  const registrableIndex = usesCountryCodeSecondLevel ? parts.length - 3 : parts.length - 2
+  const label = parts[Math.max(0, registrableIndex)] || ''
+  if (!label || /^(www|shop|store|blog|news|support|help)$/i.test(label)) {
+    return ''
+  }
+
+  return label
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((part) => part.length <= 3 ? part.toUpperCase() : `${part[0].toUpperCase()}${part.slice(1)}`)
+    .join(' ')
+}
+
+function normalizeComparable(value) {
+  return normalize(value).replace(/[^\p{L}\p{N}]+/gu, '')
+}
+
+function isGenericSearchTitle(value) {
+  const normalized = normalize(value).replace(/[^a-z0-9]+/g, ' ').trim()
+  return !normalized
+    || /^(?:home|homepage|company|official site|welcome|our story|about us|who we are|company profile|contact us|history)$/.test(normalized)
+    || LISTING_TITLE_PATTERN.test(normalized)
+}
+
+export function canonicalCompanyWebsite(value) {
+  const website = likelyOfficialWebsite(value)
+  if (!website) return ''
+
+  const url = new URL(website)
+  const segments = url.pathname.split('/').filter(Boolean)
+  const identityIndex = segments.findIndex((segment) => /^(?:about|about-us|our-story|who-we-are|company|company-profile|contact|contact-us|imprint|legal|legal-notice)$/i.test(segment))
+  if (identityIndex === 0) {
+    url.pathname = '/'
+  } else if (identityIndex === 1 && /^[a-z]{2}(?:-[a-z]{2})?$/i.test(segments[0])) {
+    url.pathname = `/${segments[0]}/`
+  }
+  url.search = ''
+  url.hash = ''
+  return url.toString()
+}
+
+export function deriveCompanyNameFromSearchResult(candidate = {}) {
+  const rawTitle = hasText(candidate.title || candidate.name) ? String(candidate.title || candidate.name).trim() : ''
+  const website = candidate.website || candidate.url || ''
+  const brand = domainBrand(website)
+  const titleSegments = rawTitle
+    .replace(/[®™©]/g, '')
+    .split(/\s+[|–—-]\s+|\s*:\s*/)
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+  const firstSegment = titleSegments[0] || ''
+  const brandKey = normalizeComparable(brand)
+  const alignedSegment = brandKey
+    ? titleSegments.find((segment) => {
+        const key = normalizeComparable(segment)
+        return key && (key.includes(brandKey) || brandKey.includes(key))
+      })
+    : ''
+
+  if (brand
+    && alignedSegment
+    && alignedSegment.length > brand.length + 15
+    && /\b(?:for \d+ years|has been|have been|since \d{4}|we are|our company|producing|manufacturing|providing)\b/i.test(alignedSegment)) {
+    return brand
+  }
+
+  if (alignedSegment
+    && !isGenericSearchTitle(alignedSegment)
+    && alignedSegment.length <= 80
+    && !(brand
+      && alignedSegment.length > brand.length + 12
+      && SEO_TITLE_DESCRIPTOR_PATTERN.test(alignedSegment)
+      && /\b[a-z0-9-]+\.(?:com|net|org|eu|de|fr|it|es|co|io)\b/i.test(alignedSegment))) {
+    return alignedSegment
+  }
+  if (!brand && firstSegment && !isGenericSearchTitle(firstSegment) && firstSegment.length <= 80) {
+    return firstSegment
+  }
+
+  return brand || likelyCompanyName(rawTitle)
+}
+
+export function isLikelyOfficialCompanyResult(candidate = {}) {
+  const website = likelyOfficialWebsite(candidate.website || candidate.url)
+  const displayedTitle = hasText(candidate.title || candidate.name) ? String(candidate.title || candidate.name).trim() : ''
+  const rawTitle = hasText(candidate.originalTitle) ? String(candidate.originalTitle).trim() : displayedTitle
+  if (!website || !rawTitle) {
+    return false
+  }
+
+  let parsed
+  try {
+    parsed = new URL(website)
+  } catch {
+    return false
+  }
+
+  const host = parsed.hostname.replace(/^www\./i, '').toLowerCase()
+  const path = parsed.pathname.toLowerCase()
+  const sourceText = [rawTitle, displayedTitle, candidate.snippet, candidate.rawContent].filter(Boolean).join(' ')
+  if (RESEARCH_DIRECTORY_HOST_MARKERS.some((marker) => host.includes(marker))) {
+    return false
+  }
+  if (NON_OFFICIAL_PROFILE_HOSTS.some((marker) => host === marker || host.endsWith(`.${marker}`))) {
+    return false
+  }
+  if (LISTING_TITLE_PATTERN.test(rawTitle)) {
+    return false
+  }
+  const titleSegments = rawTitle.split(/\s+[|–—-]\s+|\s*:\s*/).map((segment) => segment.trim()).filter(Boolean)
+  if (NON_OPERATING_ENTITY_PATTERN.test(sourceText)
+    || NON_OPERATING_NAME_PATTERN.test(`${rawTitle} ${displayedTitle}`)
+    || titleSegments.some((segment) => SLOGAN_TITLE_PATTERN.test(segment))
+    || (NON_OPERATING_ORGANIZATION_SIGNAL_PATTERN.test(sourceText)
+      && /(?:\.org|\.ngo)$/i.test(host))) {
+    return false
+  }
+  if (NON_COMPANY_PATH_MARKERS.some((marker) => path.includes(marker))) {
+    return false
+  }
+  if (/^\/(?:product|products|customer|customers|partner|partners|case-study|case-studies|success-story|success-stories)(?:\/|$)/i.test(path)) {
+    return false
+  }
+  if (/(?:^|\.)(?:library|directory|catalog)(?:\.|$)/i.test(host) || /^\/(?:manufacturer|suppliers?|companies)\/?$/i.test(path)) {
+    return false
+  }
+  if (/\.(?:pdf|docx?|xlsx?)(?:$|\?)/i.test(path)) {
+    return false
+  }
+  if (/\b(?:magazine|weekly|news|media|directory|marketplace|portal|journal|association|roundup|buyers? guide)\b/i.test(sourceText)
+    && !/\b(?:we are (?:a|an)|our company|headquarter|founded|employees?|manufacturing (?:plant|site))\b/i.test(sourceText)) {
+    return false
+  }
+
+  const pathDepth = path.split('/').filter(Boolean).length
+  const brandKey = normalizeComparable(domainBrand(website))
+  const titleKey = normalizeComparable(rawTitle)
+  const domainTitleAligned = Boolean(brandKey && titleKey && (titleKey.includes(brandKey) || brandKey.includes(titleKey)))
+  const identitySignals = [
+    /\b(?:about us|our company|who we are|we are (?:a|an)|headquarter|founded|established|employees?|workforce|manufacturing (?:plant|site)|global offices?)\b/i.test(sourceText),
+    /\b(?:inc|corp|corporation|ltd|limited|llc|gmbh|ag|plc|group)\b/i.test(rawTitle)
+  ].filter(Boolean).length
+  const rootOrIdentityPath = pathDepth === 0 || /^\/(?:en|es|de|fr|it|company|company-profile|about|about-us|our-story|who-we-are|contact|contact-us|imprint|legal|legal-notice)\/?$/i.test(path)
+
+  if (candidate.isLocalPoi) {
+    return rootOrIdentityPath && (domainTitleAligned || identitySignals >= 1)
+  }
+
+  return pathDepth <= 2 && (identitySignals >= 1 || (rootOrIdentityPath && domainTitleAligned))
+}
+
 export function isLikelyBuyerCandidate(candidate = {}) {
   const sourceText = normalize([
     candidate.name,
@@ -188,7 +418,7 @@ export function isLikelyBuyerCandidate(candidate = {}) {
 
 export function normalizeCompanyCandidate(candidate = {}) {
   const name = likelyCompanyName(candidate.name || candidate.companyName || candidate.title)
-  const website = likelyOfficialWebsite(candidate.website || candidate.url)
+  const website = canonicalCompanyWebsite(candidate.website || candidate.url)
 
   if (!name || !website) {
     return null

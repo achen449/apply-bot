@@ -18,6 +18,8 @@ function normalizeGeo(value) {
   return null
 }
 
+const GOOGLE_MAPS_MAX_RESULTS = 20
+
 export function createGoogleMapsSearchService({ googleMapsAdapter }) {
   if (!googleMapsAdapter || typeof googleMapsAdapter.searchText !== 'function') {
     throw new Error('createGoogleMapsSearchService requires googleMapsAdapter.searchText.')
@@ -26,7 +28,15 @@ export function createGoogleMapsSearchService({ googleMapsAdapter }) {
   return {
     async search({ query, location = '', filters = {} } = {}) {
       const normalizedQuery = buildQuery(query, location)
-      const results = await googleMapsAdapter.searchText(normalizedQuery, filters)
+      const parsedRequestedCount = Number.parseInt(filters.maxResults, 10)
+      const requestedCount = Number.isFinite(parsedRequestedCount) && parsedRequestedCount > 0
+        ? parsedRequestedCount
+        : GOOGLE_MAPS_MAX_RESULTS
+      const appliedMaxResults = Math.min(requestedCount, GOOGLE_MAPS_MAX_RESULTS)
+      const results = await googleMapsAdapter.searchText(normalizedQuery, {
+        ...filters,
+        maxResults: appliedMaxResults
+      })
       const filtered = (results || []).filter((result) => {
         if (filters.requirePhone && !result.phone) {
           return false
@@ -38,6 +48,12 @@ export function createGoogleMapsSearchService({ googleMapsAdapter }) {
       return {
         query: normalizedQuery,
         count: filtered.length,
+        resultPolicy: {
+          requestedCount,
+          appliedMaxResults,
+          maxAllowed: GOOGLE_MAPS_MAX_RESULTS,
+          requestTruncated: requestedCount > GOOGLE_MAPS_MAX_RESULTS
+        },
         results: filtered.map((result) => ({
           ...result,
           location: normalizeGeo(result.location),

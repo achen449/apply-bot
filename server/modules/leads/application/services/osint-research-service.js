@@ -11,7 +11,7 @@ function buildEvidenceRecord(provider, item, index) {
     website: item.website || item.url || '',
     placeId: item.placeId || item.googlePlaceId || '',
     queryLabel: item.queryLabel || '',
-    trustTier: provider === 'google-maps' ? 'official-map' : 'public-web'
+    trustTier: provider === 'google-maps' ? 'map-candidate' : 'public-web'
   }
 }
 
@@ -40,6 +40,22 @@ function evidenceMatchesSubject(item, companyName, website) {
   )
 }
 
+function scoreMapSubjectMatch(item, companyName, website, address = '') {
+  const expectedName = normalizeEntity(companyName)
+  const observedName = normalizeEntity(item.title || item.name)
+  const expectedHost = websiteHost(website)
+  const observedHost = websiteHost(item.website || item.url)
+  const expectedAddress = normalizeEntity(address)
+  const observedAddress = normalizeEntity(item.address || item.snippet)
+  let score = 0
+
+  if (expectedName && observedName === expectedName) score += 0.6
+  else if (expectedName && observedName && (observedName.includes(expectedName) || expectedName.includes(observedName))) score += 0.25
+  if (expectedHost && observedHost && expectedHost === observedHost) score += 0.6
+  if (expectedAddress && observedAddress && (observedAddress.includes(expectedAddress) || expectedAddress.includes(observedAddress))) score += 0.25
+  return Math.min(score, 1)
+}
+
 function createProviderAvailability(providerName, available, reason, queriesAttempted, resultCount) {
   return {
     provider: providerName,
@@ -59,6 +75,60 @@ function safeErrorReason(error, fallback = 'request_failed') {
     : message || code || fallback
 
   return value.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').slice(0, 240)
+}
+
+function seedRecoveredToolEvidence(toolCalls = [], evidence, providerResults, availability) {
+  const recoveredProviders = new Set()
+
+  for (const call of Array.isArray(toolCalls) ? toolCalls : []) {
+    if (call?.result?.ok === false) {
+      continue
+    }
+
+    if (call?.name === 'search_web') {
+      const provider = call.result?.provider || call.arguments?.provider || 'web-search'
+      const results = call.result?.results || []
+      for (const item of results) {
+        evidence.push(buildEvidenceRecord(provider, item, evidence.length))
+        providerResults.push({
+          provider,
+          resultType: 'recovered-web-result',
+          normalized: { title: item.title, url: item.url, snippet: item.snippet }
+        })
+      }
+      availability.push(createProviderAvailability(provider, true, null, 1, results.length))
+      recoveredProviders.add(provider)
+    }
+
+    if (call?.name === 'verify_company') {
+      const candidates = call.result?.candidates || []
+      const verified = call.result?.verified === true
+      for (const [index, item] of candidates.entries()) {
+        const normalized = {
+          title: item.name || item.title || call.arguments?.company_name || '',
+          url: item.website || item.url || '',
+          website: item.website || item.url || '',
+          snippet: item.address || '',
+          address: item.address || '',
+          phone: item.phone || '',
+          placeId: item.placeId || ''
+        }
+        evidence.push({
+          ...buildEvidenceRecord('google-maps', normalized, evidence.length),
+          trustTier: verified && index === 0 ? 'official-map' : 'map-candidate'
+        })
+        providerResults.push({
+          provider: 'google-maps',
+          resultType: 'recovered-map-result',
+          normalized: { title: normalized.title, url: normalized.url, snippet: normalized.snippet }
+        })
+      }
+      availability.push(createProviderAvailability('google-maps', true, null, 1, candidates.length))
+      recoveredProviders.add('google-maps')
+    }
+  }
+
+  return recoveredProviders
 }
 
 export function createOsintResearchService({
@@ -84,15 +154,33 @@ export function createOsintResearchService({
       const address = payload.address || ''
       const country = payload.country || ''
       const clues = Array.isArray(payload.clues) ? payload.clues : []
+      const recoveredProviders = seedRecoveredToolEvidence(
+        payload.initialToolCalls,
+        evidence,
+        providerResults,
+        availability
+      )
+      if (payload.initialError?.message || payload.initialError?.code) {
+        unresolvedQuestions.push(`AI analysis ended early: ${safeErrorReason(payload.initialError, 'ai_analysis_incomplete')}`)
+      }
 
-      if (providerAvailability.googleMaps !== false && typeof googleMapsSearch === 'function') {
+      if (recoveredProviders.has('google-maps')) {
+        // Keep the already-collected map evidence and avoid a duplicate call.
+      } else if (providerAvailability.googleMaps !== false && typeof googleMapsSearch === 'function') {
         try {
           const results = await googleMapsSearch({ query: companyName, location: country, filters: { maxResults: 5 } })
-          const normalizedResults = results?.results || results || []
-          normalizedResults.forEach((item, index) => {
-            evidence.push(buildEvidenceRecord('google-maps', item, index))
+          const normalizedResults = (results?.results || results || [])
+            .map((item) => ({ item, score: scoreMapSubjectMatch(item, companyName, website, address) }))
+            .sort((a, b) => b.score - a.score)
+          normalizedResults.forEach(({ item, score }, index) => {
+            const mapEvidence = buildEvidenceRecord('google-maps', item, index)
+            const trustedWinner = index === 0 && score >= 0.5
+            if (trustedWinner) {
+              mapEvidence.trustTier = 'official-map'
+            }
+            evidence.push(mapEvidence)
             providerResults.push({ provider: 'google-maps', resultType: 'map-result', normalized: { title: item.title, url: item.url, snippet: item.snippet } })
-            if (item.phone && evidenceMatchesSubject(item, companyName, website)) {
+            if (item.phone && trustedWinner) {
               publicContacts.push({
                 contactId: `contact-phone-${index + 1}`,
                 contactType: 'public_phone',
@@ -115,7 +203,9 @@ export function createOsintResearchService({
         unresolvedQuestions.push(`google-maps was skipped: ${reason}`)
       }
 
-      if (providerAvailability.brave !== false && typeof braveSearch === 'function') {
+      if (recoveredProviders.has('brave')) {
+        // Keep the already-collected Brave evidence and avoid a duplicate call.
+      } else if (providerAvailability.brave !== false && typeof braveSearch === 'function') {
         try {
           const results = await braveSearch({ query: companyName, label: 'company' })
           ;(results || []).forEach((item, index) => {
@@ -134,7 +224,9 @@ export function createOsintResearchService({
         unresolvedQuestions.push(`brave was skipped: ${reason}`)
       }
 
-      if (providerAvailability.tavily !== false && typeof tavilySearch === 'function') {
+      if (recoveredProviders.has('tavily')) {
+        // Keep the already-collected Tavily evidence and avoid a duplicate call.
+      } else if (providerAvailability.tavily !== false && typeof tavilySearch === 'function') {
         try {
           const results = await tavilySearch({ query: companyName, label: 'company' })
           ;(results || []).forEach((item, index) => {
@@ -214,6 +306,7 @@ export function createOsintResearchService({
       const providerEvidence = evidence.filter((item) => item.provider !== 'system')
       const entityEvidence = providerEvidence
         .filter((item) => item.provider !== 'official-website')
+        .filter((item) => item.trustTier !== 'map-candidate')
         .filter((item) => evidenceMatchesSubject(item, companyName, website))
       const websiteEvidence = providerEvidence.filter((item) => websiteHost(item.sourceUrl || item.website) === websiteHost(website))
 
@@ -338,9 +431,10 @@ export function createOsintResearchService({
       const status = entityEvidence.length > 0
         ? (hasProviderFailure || parser.reason === 'parser_failed' || !parser.available ? 'partial' : 'completed')
         : 'needs_review'
+      const finalStatus = payload.initialError && status === 'completed' ? 'partial' : status
 
       return {
-        status,
+        status: finalStatus,
         mode: payload.mode || 'company_due_diligence',
         subject: {
           companyName,
@@ -371,7 +465,7 @@ export function createOsintResearchService({
           addressStatus: mapsAddressMatched && mapEvidence.length ? 'partially_verified' : 'unverified',
           publicContactStatus: publicContacts.length ? 'partially_verified' : 'unverified',
           mapsMatchStatus,
-          researchStatus: status,
+          researchStatus: finalStatus,
           resolverVersion: 'lead-osint-v1'
         },
         parser,

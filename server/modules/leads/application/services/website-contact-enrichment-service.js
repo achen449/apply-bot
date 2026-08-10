@@ -1,14 +1,19 @@
 import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
+import { extractCompanyFacts, mergeCompanyFacts } from '../../shared/company-fact-extractors.js'
 
 const DEFAULT_PATHS = [
   '/',
+  '/about',
   '/contact',
   '/contact-us',
+  '/company',
+  '/about-us',
+  '/imprint',
+  '/legal-notice',
   '/supplier',
   '/vendor',
-  '/procurement',
-  '/about'
+  '/procurement'
 ]
 
 function hasText(value) {
@@ -226,7 +231,13 @@ function extractEmails(html = '') {
 }
 
 function normalizePhone(value = '') {
-  const normalized = decodeHtmlEntities(value)
+  let decodedValue = value
+  try {
+    decodedValue = decodeURIComponent(value)
+  } catch {
+    // Preserve the original value when it is not valid percent-encoded text.
+  }
+  const normalized = decodeHtmlEntities(decodedValue)
     .replace(/^(?:tel:|callto:)/i, '')
     .split(/[?#;]/, 1)[0]
     .replace(/\s*(?:ext\.?|x)\s*\d+.*$/i, '')
@@ -246,6 +257,11 @@ function normalizePhone(value = '') {
   // national number; this rejects values such as 00220 0 20 20 from broken
   // phone widgets while preserving ordinary local formats.
   if (/^00/.test(digits) && digits.length < 11) {
+    return ''
+  }
+
+  const yearLikeTokens = normalized.match(/\b(?:19|20)\d{2}\b/g) || []
+  if (yearLikeTokens.length >= 2 && yearLikeTokens.join('').length === digits.length) {
     return ''
   }
 
@@ -269,7 +285,13 @@ function extractPhone(html = '') {
 
 function buildUrls(website, maxPages) {
   const base = new URL(website)
-  const paths = [base.pathname, ...DEFAULT_PATHS]
+  const baseDirectory = base.pathname.endsWith('/')
+    ? base.pathname.replace(/\/$/, '')
+    : base.pathname.replace(/\/[^/]*$/, '')
+  const localizedPaths = baseDirectory && baseDirectory !== '/'
+    ? ['/contact', '/contact-us', '/company', '/about', '/about-us', '/imprint'].map((path) => `${baseDirectory}${path}`)
+    : []
+  const paths = [base.pathname, ...localizedPaths, ...DEFAULT_PATHS]
   const urls = []
 
   for (const pathname of paths) {
@@ -459,6 +481,14 @@ export function createWebsiteContactEnrichmentService({
           contactEmails: [],
           contactPages: [],
           phone: '',
+          companyName: '',
+          address: '',
+          headquarters: '',
+          employeeCount: '',
+          employeeRange: '',
+          companySize: '',
+          companySizeSource: '',
+          scaleSignals: [],
           evidence: [],
           calls: []
         }
@@ -472,6 +502,14 @@ export function createWebsiteContactEnrichmentService({
           contactEmails: [],
           contactPages: [],
           phone: '',
+          companyName: '',
+          address: '',
+          headquarters: '',
+          employeeCount: '',
+          employeeRange: '',
+          companySize: '',
+          companySizeSource: '',
+          scaleSignals: [],
           evidence: [],
           error: 'unsafe_or_unresolvable_website',
           calls: [{
@@ -499,6 +537,7 @@ export function createWebsiteContactEnrichmentService({
       const emails = []
       const contactPages = []
       const evidence = []
+      const companyFacts = []
       const calls = responses.map(({ url, response }) => ({
         url,
         ok: Boolean(response.ok && isSameWebsite(url, response.finalUrl || url)),
@@ -515,6 +554,8 @@ export function createWebsiteContactEnrichmentService({
 
         const pageEmails = extractEmails(response.text)
         const phone = extractPhone(response.text)
+        const facts = extractCompanyFacts(response.text)
+        companyFacts.push(facts)
 
         if (pageEmails.length > 0 || phone) {
           contactPages.push(url)
@@ -543,6 +584,25 @@ export function createWebsiteContactEnrichmentService({
             observedAt: new Date().toISOString()
           })
         }
+
+        if (facts.address) {
+          evidence.push({
+            type: 'public_address',
+            sourceUrl: url,
+            value: facts.address,
+            observedAt: new Date().toISOString()
+          })
+        }
+        if (facts.companySize) {
+          evidence.push({
+            type: 'public_company_size',
+            sourceUrl: url,
+            value: facts.companySize,
+            employeeCount: facts.employeeCount,
+            employeeRange: facts.employeeRange,
+            observedAt: new Date().toISOString()
+          })
+        }
       }
 
       const uniqueEmails = []
@@ -556,6 +616,7 @@ export function createWebsiteContactEnrichmentService({
       }
 
       const phone = evidence.find((item) => item.type === 'public_phone')?.value || ''
+      const facts = mergeCompanyFacts(companyFacts)
       const successfulPages = responses.filter(({ url, response }) => response.ok && isSameWebsite(url, response.finalUrl || url)).length
       const result = {
         status: uniqueEmails.length > 0 ? 'completed' : successfulPages > 0 ? 'no_public_email' : 'unavailable',
@@ -564,6 +625,7 @@ export function createWebsiteContactEnrichmentService({
         contactEmails: uniqueEmails.map((email) => email.value),
         contactPages: unique(contactPages),
         phone,
+        ...facts,
         evidence,
         calls
       }

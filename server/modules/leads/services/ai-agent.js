@@ -202,6 +202,7 @@ export class AIAgent {
     tools = [],
     maxIterations = 10,
     temperature = 0.2,
+    reasoningEffort = '',
     deadlineMs = 0,
     timeoutMs = 0,
     maxTokens = 0,
@@ -230,6 +231,7 @@ export class AIAgent {
     const taskDeadlineAt = taskDeadlineMs > 0 ? Date.now() + taskDeadlineMs : 0
     const taskTimeoutMs = asPositiveInteger(timeoutMs, this.config.timeoutMs)
     const taskMaxTokens = asPositiveInteger(maxTokens, this.config.maxTokens)
+    const taskReasoningEffort = hasText(reasoningEffort) ? reasoningEffort.trim() : this.config.reasoningEffort
     const taskMaxToolCalls = asPositiveInteger(maxToolCalls, 0)
     const taskToolTimeoutMs = asPositiveInteger(toolTimeoutMs, 0)
 
@@ -274,12 +276,13 @@ export class AIAgent {
             messages,
             tools: toolDefinitions.length ? toolDefinitions : undefined,
             tool_choice: toolDefinitions.length ? 'auto' : undefined,
-            reasoning_effort: this.config.reasoningEffort || undefined,
+            reasoning_effort: taskReasoningEffort || undefined,
             temperature,
             max_tokens: taskMaxTokens
           })
         }, effectiveTimeoutMs)
       } catch (error) {
+        if (!error.code) error.code = 'ai_request_failed'
         throw attachExecutionContext(error, {
           toolCalls,
           iterations,
@@ -289,10 +292,19 @@ export class AIAgent {
 
       if (!response.ok) {
         const responseText = await readResponseText(response)
-        throw new Error(`AI request failed: ${response.status}${responseText ? `: ${responseText}` : ''}`)
+        const error = new Error(`AI request failed: ${response.status}${responseText ? `: ${responseText}` : ''}`)
+        error.code = 'ai_request_failed'
+        throw attachExecutionContext(error, { toolCalls, iterations, messages })
       }
 
-      const data = await response.json()
+      let data
+      try {
+        data = await response.json()
+      } catch (cause) {
+        const error = new Error(`AI response JSON parsing failed: ${cause.message || 'invalid JSON'}`)
+        error.code = 'ai_request_failed'
+        throw attachExecutionContext(error, { toolCalls, iterations, messages })
+      }
       const choice = data?.choices?.[0]
       const message = choice?.message || {}
       const toolCallsFromMessage = readToolCalls(message)
@@ -371,7 +383,9 @@ export class AIAgent {
         })
       }
 
-      throw new Error('AI response did not return a final answer or tool calls.')
+      const error = new Error('AI response did not return a final answer or tool calls.')
+      error.code = 'ai_request_failed'
+      throw attachExecutionContext(error, { toolCalls, iterations, messages })
     }
 
     const error = new Error(`AI agent exceeded maximum iterations: ${maxIterations}`)

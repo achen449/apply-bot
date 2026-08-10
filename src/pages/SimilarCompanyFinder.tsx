@@ -53,11 +53,18 @@ function InfoBlock({ title, lines }: { title: string; lines: string[] }) {
   )
 }
 
+function identityStatusLabel(result: SimilarCompanyResult) {
+  if (result.mapVerified) return '地图已验证'
+  if (result.dataQuality?.identityStatus === 'official_website') return '官网身份已确认 · 地图未匹配'
+  if (result.dataQuality?.mapStatus === 'candidate_found') return '地图有候选 · 身份待核实'
+  return '身份待核实'
+}
+
 export default function SimilarCompanyFinder() {
   const [name, setName] = useState('Signify')
   const [website, setWebsite] = useState('https://www.signify.com')
-  const [industry, setIndustry] = useState('solar lighting, energy storage, industrial electrical buyers')
-  const [description, setDescription] = useState('Find companies with similar public profiles that could buy industrial connectors in Spain and Europe.')
+  const [industry, setIndustry] = useState('professional lighting, connected lighting systems, and lighting controls')
+  const [description, setDescription] = useState('Find operating lighting manufacturers and technology companies with similar public profiles in Spain and Europe.')
   const [topN, setTopN] = useState('10')
   const [isSearching, setIsSearching] = useState(false)
   const [results, setResults] = useState<SimilarCompanyResult[]>([])
@@ -261,15 +268,24 @@ export default function SimilarCompanyFinder() {
                         <Phone className="mt-0.5 h-4 w-4 shrink-0 text-gray-500" aria-hidden="true" />
                         {result.phone ? <a className="break-all text-primary-700 hover:underline dark:text-primary-300" href={`tel:${result.phone}`}>{result.phone}</a> : <span>电话未发现</span>}
                       </div>
+                      <div className="flex min-w-0 items-start gap-2 text-gray-700 dark:text-gray-200">
+                        <Building2 className="mt-0.5 h-4 w-4 shrink-0 text-gray-500" aria-hidden="true" />
+                        <span className="break-words">公司规模：{result.companySize || (result.scaleSignals?.length ? '有公开规模信号' : '未找到公开规模信息')}</span>
+                      </div>
+                      <div className="flex min-w-0 items-start gap-2 text-gray-700 dark:text-gray-200">
+                        <Globe2 className="mt-0.5 h-4 w-4 shrink-0 text-gray-500" aria-hidden="true" />
+                        <span className="break-words">总部：{result.headquarters || '未发现'}</span>
+                      </div>
                     </div>
 
                     <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
-                      {result.mapVerified ? (
-                        <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-300"><CheckCircle2 className="h-4 w-4" aria-hidden="true" />地图已验证</span>
-                      ) : <span className="text-amber-700 dark:text-amber-300">地图待复核</span>}
+                      {result.mapVerified || result.dataQuality?.identityStatus === 'official_website' ? (
+                        <span className={`inline-flex items-center gap-1 ${result.mapVerified ? 'text-emerald-700 dark:text-emerald-300' : 'text-sky-700 dark:text-sky-300'}`}><CheckCircle2 className="h-4 w-4" aria-hidden="true" />{identityStatusLabel(result)}</span>
+                      ) : <span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-300"><AlertTriangle className="h-4 w-4" aria-hidden="true" />{identityStatusLabel(result)}</span>}
                       {result.map?.confidence !== undefined ? <span className="text-xs text-gray-500 dark:text-gray-400">confidence {result.map.confidence}</span> : null}
                       {result.contactEmails?.length ? result.contactEmails.map((email) => <a key={email} className="inline-flex max-w-full items-center gap-1 break-all rounded-full bg-sky-100 px-2.5 py-1 text-xs text-sky-900 hover:underline dark:bg-sky-900/30 dark:text-sky-100" href={`mailto:${email}`}><Mail className="h-3 w-3 shrink-0" aria-hidden="true" />{email}</a>) : <span className="text-xs text-gray-500 dark:text-gray-400">未发现公开邮箱</span>}
                     </div>
+                    {result.scaleSignals?.length ? <div className="mt-2 flex flex-wrap gap-2">{result.scaleSignals.map((signal) => <span key={signal} className="rounded-full bg-violet-100 px-2.5 py-1 text-xs text-violet-800 dark:bg-violet-900/30 dark:text-violet-200">{signal}</span>)}</div> : null}
                     {result.contactPages?.length ? <div className="mt-2 break-words text-xs text-gray-500 dark:text-gray-400">邮箱来源页：{result.contactPages.map((page) => <a key={page} href={page} target="_blank" rel="noreferrer" className="ml-1 text-primary-700 hover:underline dark:text-primary-300">{page}</a>)}</div> : null}
 
                     <div className="mt-4 grid gap-4 md:grid-cols-2">
@@ -290,6 +306,15 @@ export default function SimilarCompanyFinder() {
                           `Query: ${result.company.query || 'N/A'}`,
                           `Captured At: ${formatCapturedAt(result.company.capturedAt)}`,
                           `Observed Summary: ${(result.company.snippet || result.profile.rawProfile || 'N/A').slice(0, 120)}`
+                        ]}
+                      />
+                      <InfoBlock
+                        title="Similarity Breakdown"
+                        lines={[
+                          `Business: ${result.scores?.business ?? 0}/40`,
+                          `Market: ${result.scores?.market ?? 0}/30`,
+                          `Scale: ${result.scores?.scale ?? 0}/30`,
+                          `Company Size: ${result.companySize || 'N/A'}`
                         ]}
                       />
                     </div>

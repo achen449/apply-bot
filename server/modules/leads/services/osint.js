@@ -281,7 +281,7 @@ export function createOsintService({
   tools = [],
   promptStorage,
   gistStorage,
-  prompt = OSINT_PROMPT,
+  prompt = '',
   companyEnrichmentService,
   persistResearchRun = true
 } = {}) {

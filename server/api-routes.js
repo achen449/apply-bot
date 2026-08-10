@@ -101,7 +101,7 @@ const googleMapsSearchService = createGoogleMapsSearchService({
 
 const websiteContactEnrichmentService = createWebsiteContactEnrichmentService({
   timeoutMs: isServerlessRuntime ? 3500 : 5000,
-  maxPages: isServerlessRuntime ? 3 : 4
+  maxPages: isServerlessRuntime ? 5 : 6
 })
 
 const companyEnrichmentService = createCompanyEnrichmentService({

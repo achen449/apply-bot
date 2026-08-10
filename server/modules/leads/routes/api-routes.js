@@ -346,7 +346,12 @@ export function createApiRouter({
           website: subject.website,
           address: subject.address,
           country: subject.country,
-          mode
+          mode,
+          initialToolCalls: error.toolCalls || [],
+          initialError: {
+            code: error.code || 'ai_analysis_incomplete',
+            message: error.message || 'AI analysis ended before a final report was produced.'
+          }
         })
       }
       throw error

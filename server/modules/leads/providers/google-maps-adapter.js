@@ -18,6 +18,7 @@ export function createGoogleMapsAdapter({ apiKey }) {
     try {
       const response = await fetch('https://places.googleapis.com/v1/places:searchText', {
         method: 'POST',
+        signal: options.signal,
         headers: {
           'Content-Type': 'application/json',
           'X-Goog-Api-Key': apiKey,

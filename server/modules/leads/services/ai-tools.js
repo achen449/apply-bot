@@ -53,10 +53,17 @@ function normalizeProvider(provider) {
 }
 
 function normalizeQuery(args) {
-  return [args.query, args.industry, args.country]
+  const query = hasText(args.query) ? args.query.trim() : ''
+  const normalizedQuery = query.toLowerCase().replace(/[^a-z0-9]+/g, ' ')
+  const additions = [args.industry, args.country]
     .filter(hasText)
     .map((value) => value.trim())
-    .join(' ')
+    .filter((value) => {
+      const normalizedValue = value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+      return normalizedValue && !normalizedQuery.includes(normalizedValue)
+    })
+
+  return [query, ...additions].filter(hasText).join(' ')
 }
 
 function scoreCompanyMatch(candidate, companyName, address) {
@@ -76,15 +83,17 @@ function scoreCompanyMatch(candidate, companyName, address) {
 }
 
 async function withToolTimeout(operation, timeoutMs, label) {
+  const controller = new AbortController()
   let timeout
   const timeoutPromise = new Promise((resolve) => {
     timeout = setTimeout(() => {
+      controller.abort()
       resolve(compactError('tool_timeout', `${label} timed out after ${timeoutMs}ms.`))
     }, timeoutMs)
   })
 
   try {
-    return await Promise.race([operation(), timeoutPromise])
+    return await Promise.race([operation(controller.signal), timeoutPromise])
   } finally {
     clearTimeout(timeout)
   }
@@ -130,28 +139,95 @@ export function createSearchWebTool({ tavilyAdapter, braveAdapter, timeoutMs = 3
         }
       }
       const maxResults = Math.min(asPositiveInteger(args.maxResults, 5), 20)
+      const fallbackProvider = selectedProvider === 'brave' ? 'tavily' : 'brave'
+      const fallbackAdapter = fallbackProvider === 'brave' ? brave : tavily
+      const attempts = [{ provider: selectedProvider, adapter }]
+      if (fallbackAdapter.available !== false && fallbackProvider !== selectedProvider) {
+        attempts.push({ provider: fallbackProvider, adapter: fallbackAdapter })
+      }
+      const totalTimeoutMs = asPositiveInteger(timeoutMs, 30000)
+      const deadlineAt = Date.now() + totalTimeoutMs
+      const attemptSummaries = []
 
-      return withToolTimeout(async () => {
-        try {
-          const results = await adapter.search({
-            query,
-            label: 'web-search',
-            maxResults
+      for (const [attemptIndex, attempt] of attempts.entries()) {
+        const remainingMs = deadlineAt - Date.now()
+        if (remainingMs <= 0) {
+          attemptSummaries.push({
+            provider: attempt.provider,
+            ok: false,
+            resultCount: 0,
+            error: { code: 'tool_timeout', message: `Search deadline exhausted after ${totalTimeoutMs}ms.` }
           })
-
-          return {
-            ok: true,
-            provider: selectedProvider,
-            query,
-            results: (results || []).slice(0, maxResults).map(compactSearchResult)
-          }
-        } catch (error) {
-          return compactError('provider_search_failed', `${selectedProvider} search failed.`, {
-            provider: selectedProvider,
-            message: error.message || 'Unknown provider error'
-          })
+          break
         }
-      }, asPositiveInteger(timeoutMs, 30000), `${provider} search`)
+
+        const attemptsRemaining = attempts.length - attemptIndex
+        const fallbackReserveMs = attemptsRemaining > 1
+          ? Math.max(100, Math.floor(remainingMs * 0.35))
+          : 0
+        const attemptTimeoutMs = Math.max(100, remainingMs - fallbackReserveMs)
+        const outcome = await withToolTimeout(async (signal) => {
+          try {
+            const results = await attempt.adapter.search({
+              query,
+              label: 'web-search',
+              maxResults,
+              signal,
+              timeoutMs: attemptTimeoutMs
+            })
+            return {
+              ok: true,
+              provider: attempt.provider,
+              query,
+              results: (results || []).slice(0, maxResults).map(compactSearchResult)
+            }
+          } catch (error) {
+            return compactError('provider_search_failed', `${attempt.provider} search failed.`, {
+              provider: attempt.provider,
+              message: error.message || 'Unknown provider error'
+            })
+          }
+        }, attemptTimeoutMs, `${attempt.provider} search`)
+
+        attemptSummaries.push({
+          provider: attempt.provider,
+          ok: outcome?.ok !== false,
+          resultCount: outcome?.results?.length || 0,
+          error: outcome?.error || null
+        })
+        if (outcome?.ok !== false && outcome?.results?.length > 0) {
+          return {
+            ...outcome,
+            fallbackFrom: attempt.provider === selectedProvider ? '' : selectedProvider,
+            attempts: attemptSummaries
+          }
+        }
+      }
+
+      const failedAttempts = attemptSummaries.filter((attempt) => !attempt.ok)
+      if (failedAttempts.length > 0) {
+        return compactError('provider_search_incomplete', 'No search results were returned and one or more configured providers failed.', {
+          provider: selectedProvider,
+          attempts: attemptSummaries
+        })
+      }
+
+      const lastAttempt = attemptSummaries[attemptSummaries.length - 1]
+      if (attemptSummaries.some((attempt) => attempt.ok)) {
+        return {
+          ok: true,
+          provider: lastAttempt?.provider || selectedProvider,
+          query,
+          results: [],
+          fallbackFrom: attempts.length > 1 ? selectedProvider : '',
+          attempts: attemptSummaries
+        }
+      }
+
+      return compactError('provider_search_failed', 'All configured search providers failed.', {
+        provider: selectedProvider,
+        attempts: attemptSummaries
+      })
     }
   }
 }
@@ -182,19 +258,22 @@ export function createVerifyCompanyTool({ googleMapsAdapter, timeoutMs = 30000 }
         return compactError('invalid_tool_input', 'verify_company requires company_name.')
       }
 
-      return withToolTimeout(async () => {
+      return withToolTimeout(async (signal) => {
         try {
           const query = [companyName, address, country].filter(hasText).join(' ')
           const results = await googleMaps.searchText(query, {
             requireOperational: false,
             requireWebsite: false,
-            maxResults: asPositiveInteger(args.maxResults, 5)
+            maxResults: asPositiveInteger(args.maxResults, 5),
+            signal
           })
           const candidates = (results || []).slice(0, asPositiveInteger(args.maxResults, 5)).map(compactCandidate)
-          const scoredCandidates = candidates.map((candidate) => ({
-            ...candidate,
-            confidence: scoreCompanyMatch(candidate, companyName, address)
-          }))
+          const scoredCandidates = candidates
+            .map((candidate) => ({
+              ...candidate,
+              confidence: scoreCompanyMatch(candidate, companyName, address)
+            }))
+            .sort((a, b) => b.confidence - a.confidence)
           const bestCandidate = scoredCandidates[0] || null
           const confidence = bestCandidate?.confidence || 0
 

@@ -1,3 +1,5 @@
+import { matchesTargetCountry } from '../../shared/company-result-normalizer.js'
+
 function hasText(value) {
   return typeof value === 'string' && value.trim().length > 0
 }
@@ -10,53 +12,54 @@ function unique(values = []) {
   return [...new Set(values.filter(hasText).map((value) => value.trim()))]
 }
 
-function normalizeCountry(value) {
-  const country = normalize(value)
-  if (country === 'us' || country === 'usa' || country === 'u.s.' || country === 'u.s.a.') {
-    return 'united states'
+function inferPublicScaleLabel(company = {}) {
+  if (hasText(company.companySize)) {
+    return { companySize: company.companySize, companySizeSource: company.companySizeSource || '' }
   }
-  return country
+
+  const signals = (company.scaleSignals || []).join(' ').toLowerCase()
+  if (signals.includes('public or listed-company')) {
+    return { companySize: 'Large / public company signal', companySizeSource: 'public_scale_signals' }
+  }
+  if (signals.includes('global footprint') && signals.includes('operating facilities')) {
+    return { companySize: 'International multi-site operator', companySizeSource: 'public_scale_signals' }
+  }
+  if (signals.includes('global footprint')) {
+    return { companySize: 'International operations signal', companySizeSource: 'public_scale_signals' }
+  }
+  if (signals.includes('operating facilities')) {
+    return { companySize: 'Operating-facility scale signal', companySizeSource: 'public_scale_signals' }
+  }
+  return { companySize: '', companySizeSource: '' }
+}
+
+function removeContradictoryEmployeeFact(company = {}) {
+  const exactCount = Number.parseInt(company.employeeCount, 10) || 0
+  const rangeValues = String(company.employeeRange || '').match(/\d+/g) || []
+  const upperBound = exactCount || Number.parseInt(rangeValues.at(-1), 10) || 0
+  const signals = (company.scaleSignals || []).join(' ').toLowerCase()
+  const strongLargeCompanySignal = signals.includes('public or listed-company')
+    || (signals.includes('global footprint') && signals.includes('operating facilities'))
+
+  if (!upperBound || upperBound >= 200 || !strongLargeCompanySignal) {
+    return company
+  }
+
+  return {
+    ...company,
+    employeeCount: '',
+    employeeRange: '',
+    companySize: '',
+    companySizeSource: ''
+  }
+}
+
+function hasDeadlineBudget(deadlineAt, minimumRemainingMs = 1000) {
+  return !deadlineAt || Date.now() + Math.max(0, Number(minimumRemainingMs) || 0) < deadlineAt
 }
 
 function countryMatchesAddress(country, address) {
-  const normalizedCountry = normalizeCountry(country)
-  const normalizedAddress = normalize(address)
-
-  if (!normalizedCountry || !normalizedAddress) {
-    return true
-  }
-
-  const countryTokens = {
-    'united states': ['usa', 'united states', 'u.s.a.', 'united states of america'],
-    canada: ['canada'],
-    mexico: ['mexico'],
-    germany: ['germany', 'deutschland'],
-    france: ['france'],
-    italy: ['italy', 'italia'],
-    spain: ['spain', 'españa'],
-    netherlands: ['netherlands', 'the netherlands'],
-    australia: ['australia'],
-    'united kingdom': ['united kingdom', 'uk', 'england', 'scotland', 'wales']
-  }
-
-  const expectedTokens = countryTokens[normalizedCountry]
-  const knownOtherCountries = Object.entries(countryTokens)
-    .filter(([key]) => key !== normalizedCountry)
-    .flatMap(([, tokens]) => tokens)
-
-  if (expectedTokens?.some((token) => normalizedAddress.includes(token))) {
-    return true
-  }
-
-  if (knownOtherCountries.some((token) => normalizedAddress.includes(token))) {
-    return false
-  }
-
-  if (normalizedCountry === 'united states') {
-    return /,\s*(al|ak|az|ar|ca|co|ct|de|fl|ga|hi|id|il|in|ia|ks|ky|la|me|md|ma|mi|mn|ms|mo|mt|ne|nv|nh|nj|nm|ny|nc|nd|oh|ok|or|pa|ri|sc|sd|tn|tx|ut|vt|va|wa|wv|wi|wy)\s+\d{5}/i.test(address)
-  }
-
-  return true
+  return matchesTargetCountry(country, address)
 }
 
 function websiteHost(value) {
@@ -81,7 +84,12 @@ function normalizedCompanyName(value) {
 
 function isGenericCompanyName(value) {
   const tokens = normalizedCompanyName(value).split(' ').filter(Boolean)
-  const genericTokens = new Set(['solar', 'energy', 'power', 'systems', 'system', 'connector', 'connectors', 'technology', 'technologies', 'solutions', 'global', 'industrial', 'electric', 'equipment', 'group'])
+  const genericTokens = new Set([
+    'solar', 'energy', 'power', 'systems', 'system', 'connector', 'connectors', 'technology', 'technologies',
+    'solutions', 'solution', 'global', 'industrial', 'electric', 'electrical', 'equipment', 'group', 'company',
+    'manufacturer', 'manufacturers', 'lighting', 'light', 'lights', 'led', 'street', 'commercial', 'outdoor',
+    'renewable', 'installation', 'contractor', 'professional', 'home', 'storage', 'battery', 'supplier'
+  ])
   return tokens.length === 0 || tokens.length === 1 || tokens.every((token) => genericTokens.has(token))
 }
 
@@ -98,16 +106,19 @@ function mapNameMatches(companyName, candidateName) {
 
   const expectedTokens = new Set(expected.split(' ').filter(Boolean))
   const actualTokens = new Set(actual.split(' ').filter(Boolean))
-  const overlap = [...expectedTokens].filter((token) => actualTokens.has(token)).length
+  const overlappingTokens = [...expectedTokens].filter((token) => actualTokens.has(token))
+  const overlap = overlappingTokens.length
   const ratio = overlap / Math.max(expectedTokens.size, actualTokens.size)
-  return { exact: false, strong: ratio >= 0.75 && overlap >= 2 }
+  const genericTokens = new Set(['energy', 'power', 'solar', 'lighting', 'light', 'systems', 'solutions', 'technology', 'technologies', 'international', 'global', 'group'])
+  const distinctive = overlappingTokens.some((token) => token.length >= 5 && !genericTokens.has(token))
+  return { exact: false, strong: ratio >= 0.75 && overlap >= 2, distinctive }
 }
 
 function isTrustedMapMatch(company, candidate, country = '') {
   const companyName = company.name || company.companyName
   const candidateName = candidate.title || candidate.name
   const nameMatch = mapNameMatches(companyName, candidateName)
-  if (!nameMatch.strong) {
+  if (!nameMatch.strong && !nameMatch.distinctive) {
     return false
   }
 
@@ -119,7 +130,11 @@ function isTrustedMapMatch(company, candidate, country = '') {
   const websiteMatches = Boolean(companyHost && candidateHost && companyHost === candidateHost)
   const countryMatches = Boolean(country && candidateAddress && countryMatchesAddress(country, candidateAddress))
 
-  if (addressMatches || websiteMatches) {
+  if (websiteMatches && (nameMatch.strong || nameMatch.distinctive || nameMatch.exact)) {
+    return true
+  }
+
+  if (addressMatches && (nameMatch.strong || nameMatch.exact)) {
     return true
   }
 
@@ -146,6 +161,8 @@ function scoreMapCandidate(company, candidate, country = '') {
     score += 0.55
   } else if (nameMatch.strong) {
     score += 0.4
+  } else if (nameMatch.distinctive) {
+    score += 0.15
   }
 
   if (companyAddress && candidateAddress && (candidateAddress.includes(companyAddress) || companyAddress.includes(candidateAddress))) {
@@ -153,7 +170,7 @@ function scoreMapCandidate(company, candidate, country = '') {
   }
 
   if (companyHost && candidateHost && companyHost === candidateHost) {
-    score += 0.25
+    score += 0.5
   }
 
   if (country && candidateAddress && countryMatchesAddress(country, candidateAddress)) {
@@ -168,13 +185,17 @@ function scoreMapCandidate(company, candidate, country = '') {
 }
 
 async function withTimeout(operation, timeoutMs) {
+  const controller = new AbortController()
   let timer
   const timeoutPromise = new Promise((resolve) => {
-    timer = setTimeout(() => resolve({ timedOut: true }), timeoutMs)
+    timer = setTimeout(() => {
+      controller.abort()
+      resolve({ timedOut: true })
+    }, timeoutMs)
   })
 
   try {
-    return await Promise.race([operation(), timeoutPromise])
+    return await Promise.race([operation(controller.signal), timeoutPromise])
   } finally {
     clearTimeout(timer)
   }
@@ -198,23 +219,65 @@ function mergeUniqueEvidence(existing = [], additions = []) {
   })
 }
 
+async function mapWithConcurrency(items = [], limit = 5, worker) {
+  const results = new Array(items.length)
+  let nextIndex = 0
+  const workerCount = Math.max(1, Math.min(Number(limit) || 5, items.length || 1))
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex
+      nextIndex += 1
+      results[index] = await worker(items[index], index)
+    }
+  }))
+
+  return results
+}
+
 export function createCompanyEnrichmentService({
   googleMapsSearchService,
   websiteContactEnrichmentService,
-  mapTimeoutMs = 8000
+  mapTimeoutMs = 8000,
+  maxConcurrency = 5
 } = {}) {
   return {
-    async enrichCompanies(companies = [], { country = '', maxResults = 5, existingVerificationCalls = [] } = {}) {
+    async enrichCompanies(companies = [], {
+      country = '',
+      maxResults = 5,
+      existingVerificationCalls = [],
+      deadlineAt = 0,
+      minimumRemainingMs = 1000
+    } = {}) {
       const normalizedCompanies = Array.isArray(companies) ? companies : []
       const selectedIds = new Set(normalizedCompanies.slice(0, Math.max(0, Number(maxResults) || 5)).map((company) => company.id || company.name || company.companyName))
       const verificationCalls = []
       const enrichmentCalls = []
+      let budgetExhausted = false
 
-      const enrichedSelected = await Promise.all(normalizedCompanies.map(async (company) => {
+      const enrichedSelected = await mapWithConcurrency(normalizedCompanies, maxConcurrency, async (company) => {
         const companyName = company.name || company.companyName || ''
         const companyKey = company.id || companyName
         if (!selectedIds.has(companyKey)) {
-          return company
+          return {
+            ...company,
+            dataQuality: {
+              ...(company.dataQuality || {}),
+              enrichmentStatus: 'not_attempted_policy'
+            }
+          }
+        }
+
+        if (!hasDeadlineBudget(deadlineAt, minimumRemainingMs)) {
+          budgetExhausted = true
+          return {
+            ...company,
+            dataQuality: {
+              ...(company.dataQuality || {}),
+              enrichmentStatus: 'not_attempted_budget',
+              needsReview: !company.identityGrounded && !company.mapVerified
+            }
+          }
         }
 
         let mapResult = {
@@ -249,17 +312,29 @@ export function createCompanyEnrichmentService({
           }
         }
 
-        if (!mapResult.candidate && googleMapsSearchService && typeof googleMapsSearchService.search === 'function' && hasText(companyName)) {
+        const canAttemptMap = hasDeadlineBudget(deadlineAt, minimumRemainingMs)
+        if (!mapResult.candidate
+          && canAttemptMap
+          && googleMapsSearchService
+          && typeof googleMapsSearchService.search === 'function'
+          && hasText(companyName)) {
           const queryLocation = company.address || country
 
           try {
+            const remainingMapBudgetMs = deadlineAt > 0
+              ? Math.max(1, deadlineAt - Date.now() - 100)
+              : Number.POSITIVE_INFINITY
+            const effectiveMapTimeoutMs = Math.max(1, Math.min(
+              Math.max(1000, Number(mapTimeoutMs) || 8000),
+              remainingMapBudgetMs
+            ))
             const response = await withTimeout(
-              () => googleMapsSearchService.search({
+              (signal) => googleMapsSearchService.search({
                 query: companyName,
                 location: queryLocation,
-                filters: { maxResults: 5, requireOperational: false }
+                filters: { maxResults: 5, requireOperational: false, signal }
               }),
-              Math.max(1000, Number(mapTimeoutMs) || 8000)
+              effectiveMapTimeoutMs
             )
 
             if (response?.timedOut) {
@@ -285,8 +360,16 @@ export function createCompanyEnrichmentService({
           } catch (error) {
             mapResult.error = error?.message || 'map_lookup_failed'
           }
-        } else {
-          mapResult.error = 'google_maps_unavailable'
+          if (!hasDeadlineBudget(deadlineAt, 0)) {
+            budgetExhausted = true
+          }
+        } else if (!mapResult.candidate) {
+          if (!canAttemptMap) {
+            budgetExhausted = true
+            mapResult.error = 'not_attempted_budget'
+          } else {
+            mapResult.error = 'google_maps_unavailable'
+          }
         }
 
         const mapCandidate = mapResult.candidate
@@ -341,13 +424,43 @@ export function createCompanyEnrichmentService({
           evidence: mergeUniqueEvidence(company.evidence || [], mapEvidence)
         }
 
-        if (websiteContactEnrichmentService && typeof websiteContactEnrichmentService.enrich === 'function' && hasText(next.website)) {
-          const contact = await websiteContactEnrichmentService.enrich({ website: next.website })
+        if (websiteContactEnrichmentService
+          && typeof websiteContactEnrichmentService.enrich === 'function'
+          && hasText(next.website)
+          && hasDeadlineBudget(deadlineAt, minimumRemainingMs)) {
+          let contact
+          try {
+            contact = await websiteContactEnrichmentService.enrich({ website: next.website })
+          } catch (error) {
+            contact = {
+              status: 'enrichment_failed',
+              contactEmails: [],
+              emails: [],
+              contactPages: [],
+              phone: '',
+              evidence: [],
+              error: error?.message || 'website_enrichment_failed'
+            }
+          }
+          if (!hasDeadlineBudget(deadlineAt, 0)) {
+            budgetExhausted = true
+          }
           next.emails = contact.emails || []
           next.contactEmails = contact.contactEmails || []
           next.contactPages = contact.contactPages || []
           next.contactEmailStatus = contact.status
+          if (contact.companyName && (isGenericCompanyName(companyName) || companyName.length > 80)) {
+            next.name = contact.companyName
+            next.companyName = contact.companyName
+          }
           next.phone = next.phone || contact.phone || ''
+          next.address = next.address || contact.address || ''
+          next.headquarters = company.headquarters || contact.headquarters || ''
+          next.employeeCount = company.employeeCount || contact.employeeCount || ''
+          next.employeeRange = company.employeeRange || contact.employeeRange || ''
+          next.companySize = company.companySize || contact.companySize || ''
+          next.companySizeSource = company.companySizeSource || contact.companySizeSource || ''
+          next.scaleSignals = unique([...(company.scaleSignals || []), ...(contact.scaleSignals || [])])
           next.evidence = mergeUniqueEvidence(next.evidence, contact.evidence || [])
 
           enrichmentCalls.push({
@@ -356,25 +469,81 @@ export function createCompanyEnrichmentService({
             status: contact.status,
             emailCount: (contact.emails || []).length,
             contactPages: contact.contactPages || [],
-            calls: contact.calls || []
+            calls: contact.calls || [],
+            error: contact.error || null
+          })
+        } else if (websiteContactEnrichmentService && hasText(next.website) && !hasDeadlineBudget(deadlineAt, minimumRemainingMs)) {
+          budgetExhausted = true
+          next.contactEmailStatus = 'not_attempted_budget'
+          enrichmentCalls.push({
+            companyName,
+            website: next.website,
+            status: 'not_attempted_budget',
+            emailCount: 0,
+            contactPages: [],
+            calls: [],
+            error: null
           })
         }
 
+        Object.assign(next, removeContradictoryEmployeeFact(next))
+        const publicScale = inferPublicScaleLabel(next)
+        next.companySize = publicScale.companySize
+        next.companySizeSource = publicScale.companySizeSource
+
+        const hasOfficialWebsite = Boolean(next.website)
+        const hasPublicIdentityEvidence = hasOfficialWebsite && (next.evidence || []).some((item) => [
+          'public_web',
+          'official_website',
+          'public_address',
+          'public_phone',
+          'public_email'
+        ].includes(item.type || item.sourceType))
+        const identityStatus = mapResult.verified
+          ? 'map_verified'
+          : hasPublicIdentityEvidence
+            ? 'official_website'
+            : 'unverified'
+        const mapStatus = mapResult.verified
+          ? 'verified'
+          : mapCandidate
+            ? 'candidate_found'
+            : mapResult.ok
+              ? 'not_found'
+              : 'unavailable'
+
         next.dataQuality = {
-          hasOfficialWebsite: Boolean(next.website),
+          hasOfficialWebsite,
           hasMapEvidence: Boolean(mapCandidate),
           hasPublicPhone: Boolean(next.phone),
           hasPublicEmail: Boolean(next.contactEmails?.length),
-          needsReview: !mapResult.verified || !next.website || (!next.phone && !next.contactEmails?.length)
+          hasCompanySize: Boolean(next.companySize),
+          hasScaleSignals: Boolean(next.scaleSignals?.length),
+          enrichmentStatus: next.contactEmailStatus === 'not_attempted_budget' ? 'partial_budget' : 'completed',
+          identityStatus,
+          mapStatus,
+          contactStatus: next.phone || next.contactEmails?.length
+            ? 'available'
+            : ['unavailable', 'enrichment_failed'].includes(next.contactEmailStatus)
+              ? 'unavailable'
+              : 'not_found',
+          missingFields: [
+            !next.address ? 'address' : '',
+            !next.phone ? 'phone' : '',
+            !next.contactEmails?.length ? 'email' : '',
+            !next.companySize ? 'company_size' : ''
+          ].filter(Boolean),
+          needsReview: identityStatus === 'unverified'
         }
 
         return next
-      }))
+      })
 
       return {
         companies: enrichedSelected,
         verificationCalls,
-        enrichmentCalls
+        enrichmentCalls,
+        budgetExhausted
       }
     }
   }

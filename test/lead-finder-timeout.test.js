@@ -61,7 +61,7 @@ test('serverless lead finder returns partial evidence when the AI budget is exha
           provider: 'tavily',
           results: [{
             title: 'Aurora Energy Systems',
-            url: 'https://aurora.example.test',
+            url: 'https://aurora.test',
             snippet: 'Energy systems integrator and industrial buyer.',
             provider: 'tavily'
           }]
@@ -88,7 +88,7 @@ test('serverless lead finder returns partial evidence when the AI budget is exha
     mode: 'economy'
   })
 
-  assert.equal(receivedOptions.deadlineMs, 240000)
+  assert.equal(receivedOptions.deadlineMs <= 240000 && receivedOptions.deadlineMs > 239000, true)
   assert.equal(receivedOptions.timeoutMs, 120000)
   assert.equal(receivedOptions.maxTokens, 12000)
   assert.equal(receivedOptions.maxIterations, 5)

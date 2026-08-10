@@ -113,10 +113,12 @@ export function summarizeToolCalls(toolCalls = []) {
     searchCalls: calls
       .filter((call) => call?.name === 'search_web')
       .map((call) => ({
-        provider: call.arguments?.provider || call.result?.provider || '',
+        provider: call.result?.provider || call.arguments?.provider || '',
         query: call.arguments?.query || call.result?.query || '',
         ok: call.result?.ok !== false,
-        resultCount: Array.isArray(call.result?.results) ? call.result.results.length : 0
+        resultCount: Array.isArray(call.result?.results) ? call.result.results.length : 0,
+        attempts: Array.isArray(call.result?.attempts) ? call.result.attempts : [],
+        providerRequestCount: Number(call.result?.providerRequestCount || call.result?.attempts?.length || 1)
       })),
     verificationCalls: calls
       .filter((call) => call?.name === 'verify_company')

@@ -291,6 +291,14 @@ export interface SimilarCompanyResult {
   } | null
   address?: string
   phone?: string
+  companySize?: string
+  companySizeSource?: string
+  employeeCount?: string
+  employeeRange?: string
+  scaleSignals?: string[]
+  headquarters?: string
+  industry?: string
+  products?: string[]
   contactEmails?: string[]
   contactPages?: string[]
   evidence?: Array<{
@@ -305,6 +313,12 @@ export interface SimilarCompanyResult {
     hasMapEvidence?: boolean
     hasPublicPhone?: boolean
     hasPublicEmail?: boolean
+    hasCompanySize?: boolean
+    hasScaleSignals?: boolean
+    identityStatus?: 'map_verified' | 'official_website' | 'unverified' | string
+    mapStatus?: 'verified' | 'candidate_found' | 'not_found' | 'unavailable' | string
+    contactStatus?: 'available' | 'not_found' | string
+    missingFields?: string[]
     needsReview?: boolean
   } | null
 }
@@ -345,6 +359,7 @@ export interface SimilarCompanyResponse {
       displayPolicy?: string
       verificationTarget?: number
       displayedCount?: number
+      enrichedCount?: number
     }
   }
   error?: string | Record<string, unknown> | null
